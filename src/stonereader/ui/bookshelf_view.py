@@ -26,6 +26,7 @@ class BookshelfView(QWidget):
     """Switchable widget for grid and list book views."""
 
     addRequested = pyqtSignal()
+    openRequested = pyqtSignal(str)
 
     def __init__(self, ui_scale: UiScale) -> None:
         super().__init__()
@@ -101,10 +102,12 @@ class BookshelfView(QWidget):
         self._grid_layout.setRowStretch(add_row + 1, 1)
 
     def _build_book_card(self, book: Book, card_w: int, card_h: int, cover_h: int) -> QWidget:
-        card = QFrame()
+        card = _ClickableFrame() if book.file_path else QFrame()
         card.setFrameShape(QFrame.Shape.StyledPanel)
         card.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         card.setFixedSize(card_w, card_h)
+        if book.file_path and isinstance(card, _ClickableFrame):
+            card.clicked.connect(lambda _checked=False, path=book.file_path: self.openRequested.emit(path))
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -152,6 +155,8 @@ class BookshelfView(QWidget):
         self._list.clear()
         for book in books:
             item = QListWidgetItem()
+            if book.file_path:
+                item.setData(Qt.ItemDataRole.UserRole, book.file_path)
             row_widget = QWidget()
             row = QHBoxLayout(row_widget)
             row.setContentsMargins(8, 6, 8, 6)
@@ -187,6 +192,11 @@ class BookshelfView(QWidget):
     def _on_list_item_clicked(self, item: QListWidgetItem) -> None:
         if item.data(Qt.ItemDataRole.UserRole) == "add":
             self.addRequested.emit()
+            return
+
+        file_path = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(file_path, str) and file_path:
+            self.openRequested.emit(file_path)
 
 
 class _ClickableFrame(QFrame):

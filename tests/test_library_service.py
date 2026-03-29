@@ -74,3 +74,19 @@ def test_import_books_deduplicates_by_path_and_persists(tmp_path: Path) -> None:
 
     reloaded = LibraryService(storage_path=storage_path)
     assert len(reloaded.query("shelf", "title")) == 2
+
+
+def test_update_progress_persists_and_marks_read(tmp_path: Path) -> None:
+    storage_path = tmp_path / "books.json"
+    service = LibraryService(storage_path=storage_path)
+    book_path = tmp_path / "sample.txt"
+    book_path.write_text("content", encoding="utf-8")
+
+    assert service.import_books([str(book_path)]) == 1
+    service.update_progress(str(book_path), 1.0)
+
+    reloaded = LibraryService(storage_path=storage_path)
+    loaded = reloaded.get_by_path(str(book_path))
+    assert loaded is not None
+    assert loaded.is_read is True
+    assert loaded.read_progress == 1.0

@@ -35,3 +35,17 @@
 
 - Iteration 1 deliverables completed and pending user review.
 - Next step after review: reading view and text rendering in Iteration 2.
+
+## Iteration 2 (Part 1)
+
+### Development
+
+- Added TXT reading view with bookshelf-to-reader navigation.
+- Added top-left back action to return from reader to shelf.
+- Added reader progress slider and persisted reading progress per book.
+- Added search in current text with highlight and next-result jump.
+- Added separate reader settings dialog for font size, line spacing, text color, and background color.
+
+### Testing
+
+- Added and passed tests for progress persistence and read-state update.

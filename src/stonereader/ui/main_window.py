@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -18,6 +19,7 @@ from PyQt6.QtWidgets import (
 from ..services.library_service import LibraryService
 from ..utils.screen import detect_ui_scale
 from .bookshelf_view import BookshelfView
+from .reader_view import ReaderView
 from .sidebar import Sidebar
 
 
@@ -45,8 +47,29 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(10)
 
+        self._stack = QStackedWidget()
+        self._shelf_page = self._build_shelf_page()
+
+        self._reader = ReaderView()
+        self._reader.backRequested.connect(self._back_to_shelf)
+        self._reader.progressChanged.connect(self._library.update_progress)
+
+        self._stack.addWidget(self._shelf_page)
+        self._stack.addWidget(self._reader)
+        self._stack.setCurrentWidget(self._shelf_page)
+
+        root.addWidget(self._stack)
+        self.setCentralWidget(shell)
+
+    def _build_shelf_page(self) -> QWidget:
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
+
         self._bookshelf = BookshelfView(self._ui_scale)
         self._bookshelf.addRequested.connect(self._import_books)
+        self._bookshelf.openRequested.connect(self._open_book)
         root.addLayout(self._build_toolbar())
 
         split = QSplitter()
@@ -62,7 +85,7 @@ class MainWindow(QMainWindow):
         split.setSizes([240, 900])
 
         root.addWidget(split)
-        self.setCentralWidget(shell)
+        return page
 
     def _build_toolbar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
@@ -136,6 +159,19 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "导入结果", "未导入新书籍（可能已存在）。")
             return
         QMessageBox.information(self, "导入结果", f"成功导入 {added_count} 本书籍。")
+
+    def _open_book(self, file_path: str) -> None:
+        book = self._library.get_by_path(file_path)
+        if book is None:
+            QMessageBox.warning(self, "打开失败", "未找到书籍记录。")
+            return
+
+        self._reader.load_book(book)
+        self._stack.setCurrentWidget(self._reader)
+
+    def _back_to_shelf(self) -> None:
+        self._reload_books()
+        self._stack.setCurrentWidget(self._shelf_page)
 
     def _apply_style(self) -> None:
         self._sync_view_mode_button()

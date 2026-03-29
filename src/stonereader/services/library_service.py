@@ -56,6 +56,26 @@ class LibraryService:
             self._save()
         return added_count
 
+    def get_by_path(self, file_path: str) -> Book | None:
+        """Find a book by file path."""
+        resolved = str(Path(file_path).resolve())
+        for book in self._books:
+            if book.file_path and str(Path(book.file_path).resolve()) == resolved:
+                return book
+        return None
+
+    def update_progress(self, file_path: str, progress: float) -> None:
+        """Update reading progress for a book and persist it."""
+        book = self.get_by_path(file_path)
+        if book is None:
+            return
+
+        bounded = min(max(progress, 0.0), 1.0)
+        book.read_progress = bounded
+        if bounded >= 0.999:
+            book.is_read = True
+        self._save()
+
     def _apply_scope(self, scope: Scope, selected_tag: str | None) -> list[Book]:
         if scope == "favorites":
             return [book for book in self._books if book.is_favorite]
@@ -121,6 +141,7 @@ class LibraryService:
             "tags": list(book.tags),
             "is_favorite": book.is_favorite,
             "is_read": book.is_read,
+            "read_progress": book.read_progress,
             "added_at": book.added_at.isoformat(),
             "last_read_at": book.last_read_at.isoformat() if book.last_read_at else None,
         }
@@ -136,6 +157,7 @@ class LibraryService:
             tags=list(raw.get("tags", [])),
             is_favorite=bool(raw.get("is_favorite", False)),
             is_read=bool(raw.get("is_read", False)),
+            read_progress=float(raw.get("read_progress", 0.0)),
             added_at=datetime.fromisoformat(added_at) if added_at else datetime.now(),
             last_read_at=datetime.fromisoformat(last_read_at) if last_read_at else None,
         )
