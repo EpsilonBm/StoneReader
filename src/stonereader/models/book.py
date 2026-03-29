@@ -10,6 +10,7 @@ class Book:
 
     title: str
     author: str = "Unknown"
+    file_path: str | None = None
     tags: list[str] = field(default_factory=list)
     is_favorite: bool = False
     is_read: bool = False

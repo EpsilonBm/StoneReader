@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QResizeEvent
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -25,9 +25,12 @@ from ..utils.screen import UiScale
 class BookshelfView(QWidget):
     """Switchable widget for grid and list book views."""
 
+    addRequested = pyqtSignal()
+
     def __init__(self, ui_scale: UiScale) -> None:
         super().__init__()
         self._scale = ui_scale
+        self._books: list[Book] = []
         self._stack = QStackedWidget()
 
         self._grid_container = QWidget()
@@ -41,6 +44,7 @@ class BookshelfView(QWidget):
         self._grid_scroll.setWidget(self._grid_container)
 
         self._list = QListWidget()
+        self._list.itemClicked.connect(self._on_list_item_clicked)
 
         self._stack.addWidget(self._grid_scroll)
         self._stack.addWidget(self._list)
@@ -55,9 +59,24 @@ class BookshelfView(QWidget):
     def set_list_mode(self) -> None:
         self._stack.setCurrentIndex(1)
 
+    def is_grid_mode(self) -> bool:
+        return self._stack.currentIndex() == 0
+
+    def toggle_mode(self) -> None:
+        if self.is_grid_mode():
+            self.set_list_mode()
+            return
+        self.set_grid_mode()
+
     def populate(self, books: list[Book]) -> None:
-        self._populate_grid(books)
-        self._populate_list(books)
+        self._books = list(books)
+        self._populate_grid(self._books)
+        self._populate_list(self._books)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if self._books:
+            self._populate_grid(self._books)
 
     def _populate_grid(self, books: list[Book]) -> None:
         while self._grid_layout.count():
@@ -67,28 +86,32 @@ class BookshelfView(QWidget):
                 widget.deleteLater()
 
         viewport_width = max(self._grid_scroll.viewport().width(), self._scale.card_w + 40)
-        columns = max(2, viewport_width // (self._scale.card_w + self._scale.spacing + 8))
+        columns = max(1, viewport_width // (self._scale.card_w + self._scale.spacing + 8))
+        usable_width = max(140, viewport_width - 24 - (columns - 1) * self._scale.spacing)
+        card_width = max(140, min(int(usable_width / columns), self._scale.card_w + 40))
+        card_height = int(card_width * 1.45)
+        cover_height = int(card_height * 0.72)
 
         for idx, book in enumerate(books):
             row, col = divmod(idx, columns)
-            self._grid_layout.addWidget(self._build_book_card(book), row, col)
+            self._grid_layout.addWidget(self._build_book_card(book, card_width, card_height, cover_height), row, col)
 
         add_row, add_col = divmod(len(books), columns)
-        self._grid_layout.addWidget(self._build_add_card(), add_row, add_col)
+        self._grid_layout.addWidget(self._build_add_card(card_width, card_height), add_row, add_col)
         self._grid_layout.setRowStretch(add_row + 1, 1)
 
-    def _build_book_card(self, book: Book) -> QWidget:
+    def _build_book_card(self, book: Book, card_w: int, card_h: int, cover_h: int) -> QWidget:
         card = QFrame()
         card.setFrameShape(QFrame.Shape.StyledPanel)
         card.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        card.setFixedSize(self._scale.card_w, self._scale.card_h)
+        card.setFixedSize(card_w, card_h)
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(8, 8, 8, 8)
 
         cover = QLabel("封面")
         cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        cover.setFixedHeight(self._scale.cover_h)
+        cover.setFixedHeight(cover_h)
         cover.setStyleSheet("background-color: #dae3f1; border-radius: 6px;")
 
         title = QLabel(book.title)
@@ -103,11 +126,12 @@ class BookshelfView(QWidget):
         layout.addWidget(author)
         return card
 
-    def _build_add_card(self) -> QWidget:
-        card = QFrame()
+    def _build_add_card(self, card_w: int, card_h: int) -> QWidget:
+        card = _ClickableFrame()
         card.setFrameShape(QFrame.Shape.StyledPanel)
         card.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        card.setFixedSize(self._scale.card_w, self._scale.card_h)
+        card.setFixedSize(card_w, card_h)
+        card.clicked.connect(self.addRequested)
 
         layout = QVBoxLayout(card)
         add_label = QLabel("+")
@@ -152,9 +176,25 @@ class BookshelfView(QWidget):
             self._list.setItemWidget(item, row_widget)
 
         add_item = QListWidgetItem()
+        add_item.setData(Qt.ItemDataRole.UserRole, "add")
         add_widget = QLabel("+ 添加书籍")
         add_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
         add_widget.setStyleSheet("padding: 10px; color: #4f6d7a; border: 1px dashed #88a3b9;")
         add_item.setSizeHint(add_widget.sizeHint())
         self._list.addItem(add_item)
         self._list.setItemWidget(add_item, add_widget)
+
+    def _on_list_item_clicked(self, item: QListWidgetItem) -> None:
+        if item.data(Qt.ItemDataRole.UserRole) == "add":
+            self.addRequested.emit()
+
+
+class _ClickableFrame(QFrame):
+    """Simple clickable frame used by add-book card."""
+
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)

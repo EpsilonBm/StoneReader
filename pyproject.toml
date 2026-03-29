@@ -12,6 +12,9 @@ dependencies = [
   "PyQt6>=6.7.0"
 ]
 
+[project.scripts]
+stonereader = "stonereader.main:run"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

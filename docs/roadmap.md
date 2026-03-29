@@ -14,14 +14,24 @@
 - Bookshelf main window created with:
   - navigation tree: Shelf, Tags, Favorites, Read,
   - sort controls (reading time, added time, title, author),
-  - grid/list switch,
-  - add-book button and placeholder card.
+  - grid/list toggle button,
+  - add-book button connected to file import flow,
+  - add-book placeholder card in shelf view,
+  - shelf list persisted locally and restored on next startup.
+- UI polish pass:
+  - fixed text/background contrast,
+  - improved button style,
+  - fixed responsive card layout when splitter width changes.
+- App entry provided:
+  - `python run.py`
+  - `python -m stonereader` (after `pip install -e .`)
+  - `stonereader` (CLI script after `pip install -e .`)
 
 ### Testing
 
-- Added unit test for in-memory book sorting and filtering behavior.
+- Added unit tests for sorting, dedup import, and persistence reload behavior.
 
 ### Review Notes
 
-- Pending user review for UI style and interaction details.
-- Next step after review: file import and persistence integration.
+- Iteration 1 deliverables completed and pending user review.
+- Next step after review: reading view and text rendering in Iteration 2.

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -43,6 +45,8 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(10)
 
+        self._bookshelf = BookshelfView(self._ui_scale)
+        self._bookshelf.addRequested.connect(self._import_books)
         root.addLayout(self._build_toolbar())
 
         split = QSplitter()
@@ -50,8 +54,6 @@ class MainWindow(QMainWindow):
         self._sidebar = Sidebar()
         self._sidebar.set_tags(self._library.all_tags())
         self._sidebar.scopeChanged.connect(self._on_scope_changed)
-
-        self._bookshelf = BookshelfView(self._ui_scale)
 
         split.addWidget(self._sidebar)
         split.addWidget(self._bookshelf)
@@ -72,19 +74,17 @@ class MainWindow(QMainWindow):
         self._sort_combo.addItems(["阅读时间", "添加时间", "书名", "作者"])
         self._sort_combo.currentIndexChanged.connect(self._reload_books)
 
-        self._grid_btn = QPushButton("网格")
-        self._list_btn = QPushButton("列表")
+        self._view_mode_btn = QPushButton("切换到列表")
         self._add_book_btn = QPushButton("添加书籍")
 
-        self._grid_btn.clicked.connect(self._bookshelf.set_grid_mode)
-        self._list_btn.clicked.connect(self._bookshelf.set_list_mode)
+        self._view_mode_btn.clicked.connect(self._toggle_view_mode)
+        self._add_book_btn.clicked.connect(self._import_books)
 
         bar.addWidget(title)
         bar.addStretch(1)
         bar.addWidget(QLabel("排序"))
         bar.addWidget(self._sort_combo)
-        bar.addWidget(self._grid_btn)
-        bar.addWidget(self._list_btn)
+        bar.addWidget(self._view_mode_btn)
         bar.addWidget(self._add_book_btn)
 
         return bar
@@ -108,37 +108,94 @@ class MainWindow(QMainWindow):
         )
         self._bookshelf.populate(books)
 
+    def _toggle_view_mode(self) -> None:
+        self._bookshelf.toggle_mode()
+        self._sync_view_mode_button()
+
+    def _sync_view_mode_button(self) -> None:
+        if self._bookshelf.is_grid_mode():
+            self._view_mode_btn.setText("切换到列表")
+            return
+        self._view_mode_btn.setText("切换到网格")
+
+    def _import_books(self) -> None:
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "导入书籍",
+            "",
+            "Books (*.txt *.epub *.mobi *.azw3);;All Files (*.*)",
+        )
+        if not file_paths:
+            return
+
+        added_count = self._library.import_books(file_paths)
+        self._sidebar.set_tags(self._library.all_tags())
+        self._reload_books()
+
+        if added_count == 0:
+            QMessageBox.information(self, "导入结果", "未导入新书籍（可能已存在）。")
+            return
+        QMessageBox.information(self, "导入结果", f"成功导入 {added_count} 本书籍。")
+
     def _apply_style(self) -> None:
+        self._sync_view_mode_button()
         self.setStyleSheet(
             """
-            QMainWindow { background: #f2f4f7; }
+            QMainWindow {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #eef3f8, stop:1 #dfe8f4);
+                color: #1f2a44;
+            }
             QLabel#pageTitle { font: 700 22px 'Microsoft YaHei UI'; color: #1f2a44; }
+            QLabel { color: #2b395b; }
             QTreeWidget {
-                background: #ffffff;
-                border: 1px solid #d6deea;
+                background: rgba(255, 255, 255, 0.92);
+                border: 1px solid #c8d7e9;
                 border-radius: 10px;
                 padding: 6px;
                 font: 14px 'Microsoft YaHei UI';
+                color: #22324d;
+            }
+            QTreeWidget::item {
+                padding: 4px 6px;
+                border-radius: 6px;
+                color: #22324d;
+            }
+            QTreeWidget::item:selected {
+                background: #dbe8fb;
+                color: #1a2740;
             }
             QPushButton, QComboBox {
                 min-height: 30px;
-                padding: 2px 10px;
-                border: 1px solid #c6d2e1;
-                border-radius: 8px;
-                background: #ffffff;
+                padding: 4px 12px;
+                border: 1px solid #86a4c8;
+                border-radius: 10px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #fefeff, stop:1 #eef4ff);
+                color: #213455;
+                font: 600 13px 'Microsoft YaHei UI';
             }
             QPushButton:hover {
-                background: #eaf2fb;
+                background: #e5f0ff;
+                border-color: #5f88bb;
+            }
+            QPushButton:pressed {
+                background: #d6e7ff;
+            }
+            QComboBox QAbstractItemView {
+                color: #213455;
+                background: #ffffff;
             }
             QListWidget {
-                background: #ffffff;
-                border: 1px solid #d6deea;
+                background: rgba(255, 255, 255, 0.95);
+                border: 1px solid #c8d7e9;
                 border-radius: 10px;
+                color: #22324d;
             }
             QScrollArea {
-                border: 1px solid #d6deea;
+                border: 1px solid #c8d7e9;
                 border-radius: 10px;
-                background: #ffffff;
+                background: rgba(255, 255, 255, 0.95);
             }
             """
         )
