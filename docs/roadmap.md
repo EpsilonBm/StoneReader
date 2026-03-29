@@ -49,3 +49,15 @@
 ### Testing
 
 - Added and passed tests for progress persistence and read-state update.
+
+## Iteration 2 (Part 2)
+
+### Development
+
+- Added plain-text chapter detection and chapter dropdown jump in reader view.
+- Updated search to work within the current chapter and keep next-hit navigation.
+- Added line-length setting in reader display settings dialog.
+
+### Testing
+
+- Added chapter detection unit tests and kept full test suite passing.

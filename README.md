@@ -7,6 +7,7 @@ StoneReader is a lightweight and extensible e-book reader built with Python and 
 - Preparation phase completed: project structure, dependency strategy, git-ready files.
 - Iteration 1 completed: base framework, bookshelf UI, add-book import flow, and local bookshelf persistence.
 - Iteration 2 (part 1) completed: TXT reader view with back navigation, progress slider, search highlight, and visual settings dialog.
+- Iteration 2 (part 2) completed: chapter detection/jump, chapter-scoped search, and configurable line length.
 
 ## Quick Start
 
@@ -65,6 +66,12 @@ docs/roadmap.md
 - Bottom progress slider with persisted reading progress.
 - Search in current text with highlight and next-result navigation.
 - Separate reader settings dialog for font size, line spacing, text color, and background color.
+
+## Iteration 2 (Part 2) Features
+
+- Auto chapter detection for TXT with chapter dropdown navigation.
+- Search now targets current chapter and supports next-hit navigation.
+- Reader settings add line-length control for improved immersion.
 
 ## Tests
 

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -23,12 +25,14 @@ from PyQt6.QtWidgets import (
 )
 
 from ..models.book import Book
+from ..utils.text_chapters import ChapterSpan, detect_chapters
 
 
 @dataclass(slots=True)
 class ReaderVisualSettings:
     font_size: int = 18
     line_spacing_percent: int = 150
+    line_width_percent: int = 82
     text_color: str = "#1f2a44"
     background_color: str = "#f8f5ee"
 
@@ -58,11 +62,17 @@ class ReaderSettingsDialog(QDialog):
         self._line_spacing.setSuffix("%")
         self._line_spacing.setValue(settings.line_spacing_percent)
 
+        self._line_width = QSpinBox()
+        self._line_width.setRange(55, 100)
+        self._line_width.setSuffix("%")
+        self._line_width.setValue(settings.line_width_percent)
+
         self._text_color = QLineEdit(settings.text_color)
         self._bg_color = QLineEdit(settings.background_color)
 
         root.addLayout(self._row("字号", self._font_size))
         root.addLayout(self._row("行距", self._line_spacing))
+        root.addLayout(self._row("行长度", self._line_width))
         root.addLayout(self._row("文字颜色", self._text_color))
         root.addLayout(self._row("背景颜色", self._bg_color))
 
@@ -82,6 +92,7 @@ class ReaderSettingsDialog(QDialog):
         return ReaderVisualSettings(
             font_size=self._font_size.value(),
             line_spacing_percent=self._line_spacing.value(),
+            line_width_percent=self._line_width.value(),
             text_color=self._text_color.text().strip() or "#1f2a44",
             background_color=self._bg_color.text().strip() or "#f8f5ee",
         )
@@ -96,7 +107,10 @@ class ReaderView(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._book: Book | None = None
+        self._plain_text = ""
+        self._chapters: list[ChapterSpan] = [ChapterSpan("全文", 0, 0)]
         self._syncing = False
+        self._syncing_chapter = False
         self._matches: list[tuple[int, int]] = []
         self._active_match_index = -1
         self._visual_settings = ReaderVisualSettings()
@@ -109,6 +123,8 @@ class ReaderView(QWidget):
         self._back_btn = QPushButton("返回书架")
         self._title_label = QLabel("未打开书籍")
         self._title_label.setObjectName("readerTitle")
+        self._chapter_combo = QComboBox()
+        self._chapter_combo.setMinimumWidth(220)
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText("搜索当前文本")
         self._search_btn = QPushButton("搜索")
@@ -116,12 +132,16 @@ class ReaderView(QWidget):
         self._settings_btn = QPushButton("显示设置")
 
         self._back_btn.clicked.connect(self.backRequested)
+        self._chapter_combo.currentIndexChanged.connect(self._jump_to_chapter)
+        self._search_input.returnPressed.connect(self._search_all)
         self._search_btn.clicked.connect(self._search_all)
         self._next_btn.clicked.connect(self._goto_next_match)
         self._settings_btn.clicked.connect(self._open_settings_dialog)
+        self._next_btn.setEnabled(False)
 
         toolbar.addWidget(self._back_btn)
         toolbar.addWidget(self._title_label, 1)
+        toolbar.addWidget(self._chapter_combo)
         toolbar.addWidget(self._search_input, 2)
         toolbar.addWidget(self._search_btn)
         toolbar.addWidget(self._next_btn)
@@ -151,16 +171,22 @@ class ReaderView(QWidget):
         self._title_label.setText(book.title)
 
         if not book.file_path:
+            self._plain_text = ""
             self._text.setPlainText("该书籍没有关联本地文件路径。")
+            self._set_chapters([ChapterSpan("全文", 0, 0)])
             return
 
         path = Path(book.file_path)
         if path.suffix.lower() != ".txt":
+            self._plain_text = ""
             self._text.setPlainText("当前仅支持 TXT 阅读。请在后续迭代中打开该格式。")
+            self._set_chapters([ChapterSpan("全文", 0, 0)])
             return
 
         content = self._read_text(path)
+        self._plain_text = content
         self._text.setPlainText(content)
+        self._set_chapters(detect_chapters(content))
         self._clear_search_highlight()
         self._set_progress(book.read_progress)
 
@@ -187,6 +213,7 @@ class ReaderView(QWidget):
         self._syncing = False
 
         ratio = value / 1000
+        self._sync_chapter_combo_by_viewport()
         self._progress_label.setText(f"{int(ratio * 100)}%")
         if self._book and self._book.file_path:
             self.progressChanged.emit(self._book.file_path, ratio)
@@ -203,6 +230,7 @@ class ReaderView(QWidget):
         self._progress_slider.setValue(int(ratio * 1000))
         self._syncing = False
 
+        self._sync_chapter_combo_by_viewport()
         self._progress_label.setText(f"{int(ratio * 100)}%")
         if self._book and self._book.file_path:
             self.progressChanged.emit(self._book.file_path, ratio)
@@ -220,23 +248,30 @@ class ReaderView(QWidget):
         if not term:
             return
 
+        chapter = self._current_chapter()
+        base_start = chapter.start
+        base_end = chapter.end
+
         doc = self._text.document()
-        cursor = QTextCursor(doc)
         fmt = QTextCharFormat()
         fmt.setBackground(QColor("#ffe08a"))
 
         extras = []
-        while True:
-            cursor = doc.find(term, cursor)
-            if cursor.isNull():
-                break
-            self._matches.append((cursor.selectionStart(), cursor.selectionEnd()))
+        for found in re.finditer(re.escape(term), self._plain_text[base_start:base_end], flags=re.IGNORECASE):
+            start = base_start + found.start()
+            end = base_start + found.end()
+            self._matches.append((start, end))
+
+            cursor = QTextCursor(doc)
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
             extra = QTextEdit.ExtraSelection()
             extra.cursor = cursor
             extra.format = fmt
             extras.append(extra)
 
         self._text.setExtraSelections(extras)
+        self._next_btn.setEnabled(bool(self._matches))
         if not self._matches:
             QMessageBox.information(self, "搜索", "未找到匹配内容。")
             return
@@ -261,6 +296,7 @@ class ReaderView(QWidget):
         self._matches.clear()
         self._active_match_index = -1
         self._text.setExtraSelections([])
+        self._next_btn.setEnabled(False)
 
     def _open_settings_dialog(self) -> None:
         dialog = ReaderSettingsDialog(self._visual_settings, self)
@@ -283,6 +319,62 @@ class ReaderView(QWidget):
         cursor.clearSelection()
         self._text.setTextCursor(cursor)
 
+        self._text.setLineWrapMode(QTextEdit.LineWrapMode.FixedPixelWidth)
+        self._update_line_wrap_width()
+
         self._text.setStyleSheet(
             f"QTextEdit {{ color: {settings.text_color}; background: {settings.background_color}; border-radius: 10px; border: 1px solid #c8d7e9; }}"
         )
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._update_line_wrap_width()
+
+    def _update_line_wrap_width(self) -> None:
+        viewport_width = max(400, self._text.viewport().width())
+        wrapped = max(260, int(viewport_width * self._visual_settings.line_width_percent / 100))
+        self._text.setLineWrapColumnOrWidth(wrapped)
+
+    def _set_chapters(self, chapters: list[ChapterSpan]) -> None:
+        self._chapters = chapters or [ChapterSpan("全文", 0, len(self._plain_text))]
+        self._syncing_chapter = True
+        self._chapter_combo.clear()
+        for chapter in self._chapters:
+            self._chapter_combo.addItem(chapter.title)
+        self._chapter_combo.setCurrentIndex(0)
+        self._syncing_chapter = False
+
+    def _current_chapter(self) -> ChapterSpan:
+        idx = self._chapter_combo.currentIndex()
+        if idx < 0 or idx >= len(self._chapters):
+            return ChapterSpan("全文", 0, len(self._plain_text))
+        return self._chapters[idx]
+
+    def _jump_to_chapter(self, index: int) -> None:
+        if self._syncing_chapter:
+            return
+        if index < 0 or index >= len(self._chapters):
+            return
+
+        chapter = self._chapters[index]
+        cursor = self._text.textCursor()
+        cursor.setPosition(chapter.start)
+        self._text.setTextCursor(cursor)
+        self._text.ensureCursorVisible()
+
+    def _sync_chapter_combo_by_viewport(self) -> None:
+        if not self._chapters:
+            return
+
+        cursor = self._text.cursorForPosition(QPoint(6, 6))
+        pos = cursor.position()
+        target_idx = 0
+        for idx, chapter in enumerate(self._chapters):
+            if chapter.start <= pos < chapter.end:
+                target_idx = idx
+                break
+
+        if self._chapter_combo.currentIndex() != target_idx:
+            self._syncing_chapter = True
+            self._chapter_combo.setCurrentIndex(target_idx)
+            self._syncing_chapter = False
