@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stonereader"
+version = "0.1.0"
+description = "A lightweight and extensible reader built with PyQt6"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyQt6>=6.7.0"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
