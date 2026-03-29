@@ -9,14 +9,16 @@ StoneReader is a lightweight and extensible e-book reader built with Python and 
 
 ## Quick Start
 
+- Recommended Python version: 3.11 - 3.13 (PyQt6 is not stable on 3.14 in this setup).
+
 1. Create and activate a virtual environment.
-2. Install dependencies:
+1. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Run the app from project root:
+1. Run the app from project root:
 
 ```bash
 python -m src.stonereader.main

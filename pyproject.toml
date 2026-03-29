@@ -7,7 +7,7 @@ name = "stonereader"
 version = "0.1.0"
 description = "A lightweight and extensible reader built with PyQt6"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
   "PyQt6>=6.7.0"
 ]
