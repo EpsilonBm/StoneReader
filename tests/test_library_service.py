@@ -90,3 +90,4 @@ def test_update_progress_persists_and_marks_read(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.is_read is True
     assert loaded.read_progress == 1.0
+    assert loaded.last_read_at is not None

@@ -72,8 +72,11 @@ class LibraryService:
 
         bounded = min(max(progress, 0.0), 1.0)
         book.read_progress = bounded
+        book.last_read_at = datetime.now()
         if bounded >= 0.999:
             book.is_read = True
+        elif book.is_read:
+            book.is_read = False
         self._save()
 
     def _apply_scope(self, scope: Scope, selected_tag: str | None) -> list[Book]:

@@ -39,7 +39,12 @@ class ReaderSettingsDialog(QDialog):
     def __init__(self, settings: ReaderVisualSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("阅读显示设置")
-        self._settings = ReaderVisualSettings(**settings.__dict__)
+        self._settings = ReaderVisualSettings(
+            font_size=settings.font_size,
+            line_spacing_percent=settings.line_spacing_percent,
+            text_color=settings.text_color,
+            background_color=settings.background_color,
+        )
 
         root = QVBoxLayout(self)
 
