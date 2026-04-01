@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QResizeEvent
+from PyQt6.QtGui import QColor, QFont, QResizeEvent, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -27,6 +27,7 @@ class BookshelfView(QWidget):
 
     addRequested = pyqtSignal()
     openRequested = pyqtSignal(str)
+    manageRequested = pyqtSignal(str, object)
 
     def __init__(self, ui_scale: UiScale) -> None:
         super().__init__()
@@ -46,6 +47,8 @@ class BookshelfView(QWidget):
 
         self._list = QListWidget()
         self._list.itemClicked.connect(self._on_list_item_clicked)
+        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list.customContextMenuRequested.connect(self._on_list_context_menu)
 
         self._stack.addWidget(self._grid_scroll)
         self._stack.addWidget(self._list)
@@ -109,6 +112,7 @@ class BookshelfView(QWidget):
         card.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d0dae5; border-radius: 8px; } QFrame:hover { border-color: #7b9cc0; }")
         if book.file_path and isinstance(card, _ClickableFrame):
             card.clicked.connect(lambda _checked=False, path=book.file_path: self.openRequested.emit(path))
+            card.contextRequested.connect(lambda pos, path=book.file_path: self.manageRequested.emit(path, pos))
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -117,6 +121,11 @@ class BookshelfView(QWidget):
         cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cover.setFixedHeight(cover_h)
         cover.setStyleSheet("background-color: #dae3f1; border-radius: 6px; color: #52616b; font-weight: bold;")
+        if book.cover_path:
+            pix = QPixmap(book.cover_path)
+            if not pix.isNull():
+                cover.setPixmap(pix.scaled(cover.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                cover.setText("")
 
         title = QLabel(book.title)
         title.setWordWrap(True)
@@ -166,6 +175,10 @@ class BookshelfView(QWidget):
             cover = QLabel()
             cover.setFixedSize(36, 52)
             cover.setStyleSheet("background-color: #dae3f1; border-radius: 4px;")
+            if book.cover_path:
+                pix = QPixmap(book.cover_path)
+                if not pix.isNull():
+                    cover.setPixmap(pix.scaled(cover.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
             title = QLabel(book.title)
             title.setFont(QFont("Microsoft YaHei UI", 10))
@@ -200,13 +213,26 @@ class BookshelfView(QWidget):
         if isinstance(file_path, str) and file_path:
             self.openRequested.emit(file_path)
 
+    def _on_list_context_menu(self, pos) -> None:
+        item = self._list.itemAt(pos)
+        if item is None:
+            return
+        file_path = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(file_path, str) and file_path and file_path != "add":
+            self.manageRequested.emit(file_path, self._list.mapToGlobal(pos))
+
 
 class _ClickableFrame(QFrame):
     """Simple clickable frame used by add-book card."""
 
     clicked = pyqtSignal()
+    contextRequested = pyqtSignal(object)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event) -> None:  # type: ignore[override]
+        self.contextRequested.emit(event.globalPos())
+        event.accept()

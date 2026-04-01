@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Literal
 
 from ..models.book import Book
+from ..utils.book_metadata import extract_epub_metadata, extract_mobi_metadata, save_cover_bytes
 
 SortBy = Literal["reading", "added", "title", "author"]
-Scope = Literal["shelf", "favorites", "read", "tag"]
+Scope = Literal["shelf", "favorites", "read", "format", "tag"]
 
 
 class LibraryService:
@@ -23,7 +24,15 @@ class LibraryService:
 
     def all_tags(self) -> list[str]:
         """Return all existing tags sorted alphabetically."""
-        tags = {tag for book in self._books for tag in book.tags}
+        tags = {tag for book in self._books for tag in book.custom_tags}
+        return sorted(tags)
+
+    def all_formats(self) -> list[str]:
+        formats = {tag for book in self._books for tag in book.tags}
+        return sorted(formats)
+
+    def all_custom_tags(self) -> list[str]:
+        tags = {tag for book in self._books for tag in book.custom_tags}
         return sorted(tags)
 
     def query(self, scope: Scope, sort_by: SortBy, selected_tag: str | None = None) -> list[Book]:
@@ -48,7 +57,20 @@ class LibraryService:
             suffix = Path(resolved).suffix.lower().lstrip(".")
             tags = [suffix] if suffix else []
 
-            self._books.append(Book(title=title, author=author, file_path=resolved, tags=tags))
+            meta = self._extract_metadata(resolved)
+            title = meta.get("title", title)
+            author = meta.get("author", author)
+            cover_path = meta.get("cover_path")
+
+            self._books.append(
+                Book(
+                    title=title,
+                    author=author,
+                    file_path=resolved,
+                    cover_path=cover_path,
+                    tags=tags,
+                )
+            )
             existing_paths.add(resolved)
             added_count += 1
 
@@ -73,10 +95,24 @@ class LibraryService:
         bounded = min(max(progress, 0.0), 1.0)
         book.read_progress = bounded
         book.last_read_at = datetime.now()
-        if bounded >= 0.999:
-            book.is_read = True
-        elif book.is_read:
-            book.is_read = False
+        self._save()
+
+    def add_custom_tag(self, file_path: str, tag: str) -> None:
+        book = self.get_by_path(file_path)
+        if book is None:
+            return
+        clean = tag.strip()
+        if not clean:
+            return
+        if clean not in book.custom_tags:
+            book.custom_tags.append(clean)
+            self._save()
+
+    def set_read_status(self, file_path: str, is_read: bool) -> None:
+        book = self.get_by_path(file_path)
+        if book is None:
+            return
+        book.is_read = is_read
         self._save()
 
     def update_annotations(
@@ -101,9 +137,27 @@ class LibraryService:
             return [book for book in self._books if book.is_favorite]
         if scope == "read":
             return [book for book in self._books if book.is_read]
-        if scope == "tag" and selected_tag:
+        if scope == "format" and selected_tag:
             return [book for book in self._books if selected_tag in book.tags]
+        if scope == "tag" and selected_tag:
+            return [book for book in self._books if selected_tag in book.custom_tags]
         return list(self._books)
+
+    def _extract_metadata(self, file_path: str) -> dict:
+        suffix = Path(file_path).suffix.lower()
+        meta: dict = {}
+        if suffix == ".epub":
+            meta = extract_epub_metadata(file_path)
+        elif suffix in {".mobi", ".azw3"}:
+            meta = extract_mobi_metadata(file_path)
+
+        cover_bytes = meta.get("cover_bytes")
+        cover_ext = meta.get("cover_ext", ".jpg")
+        if isinstance(cover_bytes, (bytes, bytearray)):
+            cover_path = save_cover_bytes(self._storage_path.parent, file_path, bytes(cover_bytes), str(cover_ext))
+            if cover_path:
+                meta["cover_path"] = cover_path
+        return meta
 
     @staticmethod
     def _sort_key(sort_by: SortBy):
@@ -158,7 +212,9 @@ class LibraryService:
             "title": book.title,
             "author": book.author,
             "file_path": book.file_path,
+            "cover_path": book.cover_path,
             "tags": list(book.tags),
+            "custom_tags": list(book.custom_tags),
             "is_favorite": book.is_favorite,
             "is_read": book.is_read,
             "read_progress": book.read_progress,
@@ -177,7 +233,9 @@ class LibraryService:
             title=raw.get("title", "Untitled"),
             author=raw.get("author", "Unknown"),
             file_path=raw.get("file_path"),
+            cover_path=raw.get("cover_path"),
             tags=list(raw.get("tags", [])),
+            custom_tags=list(raw.get("custom_tags", [])),
             is_favorite=bool(raw.get("is_favorite", False)),
             is_read=bool(raw.get("is_read", False)),
             read_progress=float(raw.get("read_progress", 0.0)),

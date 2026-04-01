@@ -11,7 +11,9 @@ class Book:
     title: str
     author: str = "Unknown"
     file_path: str | None = None
+    cover_path: str | None = None
     tags: list[str] = field(default_factory=list)
+    custom_tags: list[str] = field(default_factory=list)
     is_favorite: bool = False
     is_read: bool = False
     read_progress: float = 0.0

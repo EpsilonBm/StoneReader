@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -79,11 +82,13 @@ class MainWindow(QMainWindow):
         self._bookshelf = BookshelfView(self._ui_scale)
         self._bookshelf.addRequested.connect(self._import_books)
         self._bookshelf.openRequested.connect(self._open_book)
+        self._bookshelf.manageRequested.connect(self._show_book_manage_menu)
         root.addLayout(self._build_toolbar())
 
         split = QSplitter()
 
         self._sidebar = Sidebar()
+        self._sidebar.set_formats(self._library.all_formats())
         self._sidebar.set_tags(self._library.all_tags())
         self._sidebar.scopeChanged.connect(self._on_scope_changed)
 
@@ -98,12 +103,15 @@ class MainWindow(QMainWindow):
 
     def _build_toolbar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        bar.setSpacing(8)
 
         title = QLabel("我的书架")
         title.setObjectName("pageTitle")
 
         self._sort_combo = QComboBox()
         self._sort_combo.addItems(["阅读时间", "添加时间", "书名", "作者"])
+        self._sort_combo.setFixedHeight(32)
         self._sort_combo.currentIndexChanged.connect(self._reload_books)
 
         self._view_mode_btn = QPushButton("")
@@ -121,7 +129,10 @@ class MainWindow(QMainWindow):
 
         bar.addWidget(title)
         bar.addStretch(1)
-        bar.addWidget(QLabel("排序"))
+        sort_label = QLabel("排序")
+        sort_label.setFixedHeight(32)
+        sort_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        bar.addWidget(sort_label)
         bar.addWidget(self._sort_combo)
         bar.addWidget(self._view_mode_btn)
         bar.addWidget(self._add_book_btn)
@@ -170,6 +181,7 @@ class MainWindow(QMainWindow):
             return
 
         added_count = self._library.import_books(file_paths)
+        self._sidebar.set_formats(self._library.all_formats())
         self._sidebar.set_tags(self._library.all_tags())
         self._reload_books()
 
@@ -190,6 +202,25 @@ class MainWindow(QMainWindow):
     def _back_to_shelf(self) -> None:
         self._reload_books()
         self._stack.setCurrentWidget(self._shelf_page)
+
+    def _show_book_manage_menu(self, file_path: str, global_pos) -> None:
+        book = self._library.get_by_path(file_path)
+        if book is None:
+            return
+
+        menu = QMenu(self)
+        add_tag = menu.addAction("添加标签")
+        mark_read = menu.addAction("标记为已读" if not book.is_read else "取消已读")
+        chosen = menu.exec(global_pos)
+        if chosen is add_tag:
+            text, ok = QInputDialog.getText(self, "添加标签", "输入自定义标签:")
+            if ok and text.strip():
+                self._library.add_custom_tag(file_path, text.strip())
+                self._sidebar.set_tags(self._library.all_tags())
+                self._reload_books()
+        elif chosen is mark_read:
+            self._library.set_read_status(file_path, not book.is_read)
+            self._reload_books()
 
     def _apply_style(self) -> None:
         self._sync_view_mode_button()
@@ -214,25 +245,42 @@ class MainWindow(QMainWindow):
                 padding: 4px 6px;
                 border-radius: 6px;
                 color: #22324d;
+                background: transparent;
             }
+            QTreeWidget::item:hover { background: #e2e8f0; }
             QTreeWidget::item:selected {
                 background: #dbe8fb;
                 color: #1a2740;
             }
-            QPushButton, QComboBox {
+            QPushButton {
                 min-height: 30px;
                 padding: 4px 14px;
+                border: none;
+                border-radius: 4px;
+                background: transparent;
+                color: #213455;
+                font: 600 13px 'Microsoft YaHei UI';
+            }
+            QPushButton:hover {
+                background: #e5f0ff;
+            }
+            QPushButton:pressed {
+                background: #d6e7ff;
+            }
+            QComboBox {
+                min-height: 30px;
+                padding: 4px 10px;
                 border: 1px solid #86a4c8;
                 border-radius: 4px;
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #fefeff, stop:1 #eef4ff);
                 color: #213455;
                 font: 600 13px 'Microsoft YaHei UI';
             }
-            QPushButton:hover, QComboBox:hover {
+            QComboBox:hover {
                 background: #e5f0ff;
                 border-color: #5f88bb;
             }
-            QPushButton:pressed, QComboBox:pressed {
+            QComboBox:pressed {
                 background: #d6e7ff;
             }
             QComboBox::drop-down {

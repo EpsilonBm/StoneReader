@@ -59,14 +59,14 @@ class HoverButton(QPushButton):
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
         self.setMouseTracking(True)
-        self.setStyleSheet("background: transparent; color: transparent; border: none;")
+        self.setStyleSheet("background: transparent; color: inherit; border: none; border-radius: 4px;")
 
     def enterEvent(self, event):
         self.setStyleSheet("background: rgba(0, 0, 0, 0.08); color: inherit; border-radius: 4px; font-weight: bold;")
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.setStyleSheet("background: transparent; color: transparent; border: none;")
+        self.setStyleSheet("background: transparent; color: inherit; border: none; border-radius: 4px;")
         super().leaveEvent(event)
 
 
@@ -339,9 +339,10 @@ class ReaderSidebar(QWidget):
         self.setStyleSheet(
             "QWidget#ReaderSidebar { border-right: 1px solid rgba(0,0,0,0.1); background: #ffffff; color: #1a2333; }"
             "QListWidget { border: none; background: transparent; padding: 4px; }"
-            "QListWidget::item { padding: 6px 8px; border-radius: 6px; }"
+            "QListWidget::item { padding: 6px 8px; border-radius: 6px; background: transparent; }"
+            "QListWidget::item:hover { background: #eef2f7; }"
             "QListWidget::item:selected { background: #e2e8f0; }"
-            "QToolButton { border: none; padding: 6px; border-radius: 6px; }"
+            "QToolButton { border: none; padding: 6px; border-radius: 6px; background: transparent; }"
             "QToolButton:checked, QToolButton:hover { background: #e2e8f0; }"
         )
 
@@ -493,7 +494,10 @@ class ReaderView(QWidget):
         self._toggle_sidebar_btn.setIcon(QIcon(_icon_path("sidebar")))
         self._toggle_sidebar_btn.setToolTip("目录面板")
         self._toggle_sidebar_btn.setText("")
-        self._toggle_sidebar_btn.setStyleSheet("background: rgba(0,0,0,0.05); color: rgba(0,0,0,0.6); border: none; border-radius: 4px;")
+        self._toggle_sidebar_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: rgba(0,0,0,0.6); border: none; border-radius: 4px; }"
+            "QPushButton:hover { background: rgba(0,0,0,0.08); }"
+        )
         self._toggle_sidebar_btn.setFixedSize(40, 36)
         self._toggle_sidebar_btn.clicked.connect(self._toggle_sidebar)
 
@@ -501,7 +505,7 @@ class ReaderView(QWidget):
         self._back_btn.setIcon(QIcon(_icon_path("back")))
         self._back_btn.setToolTip("返回书架")
         self._back_btn.setFixedSize(40, 36)
-        self._back_btn.clicked.connect(self.backRequested)
+        self._back_btn.clicked.connect(self._handle_back)
 
         self._header_info = QLabel("未打开书籍")
         self._header_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -510,7 +514,10 @@ class ReaderView(QWidget):
         self._toggle_settings_btn = QPushButton("")
         self._toggle_settings_btn.setIcon(QIcon(_icon_path("settings")))
         self._toggle_settings_btn.setToolTip("显示设置")
-        self._toggle_settings_btn.setStyleSheet("background: rgba(0,0,0,0.05); color: rgba(0,0,0,0.6); border: none; border-radius: 4px;")
+        self._toggle_settings_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: rgba(0,0,0,0.6); border: none; border-radius: 4px; }"
+            "QPushButton:hover { background: rgba(0,0,0,0.08); }"
+        )
         self._toggle_settings_btn.setFixedSize(40, 36)
         self._toggle_settings_btn.clicked.connect(self._toggle_settings)
 
@@ -608,6 +615,8 @@ class ReaderView(QWidget):
         self._search_panel.matchSelected.connect(self._goto_match)
         shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         shortcut.activated.connect(self._toggle_search)
+        self._esc_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self._esc_shortcut.activated.connect(self._handle_back)
         self._sc_prev = QShortcut(QKeySequence(self._visual_settings.shortcut_prev), self)
         self._sc_prev.activated.connect(self._go_prev)
         self._sc_next = QShortcut(QKeySequence(self._visual_settings.shortcut_next), self)
@@ -629,6 +638,15 @@ class ReaderView(QWidget):
 
     def _toggle_sidebar(self) -> None:
         self._sidebar.setVisible(not self._sidebar.isVisible())
+
+    def _handle_back(self) -> None:
+        if self._settings_panel.isVisible():
+            self._settings_panel.hide()
+            return
+        if self._sidebar.isVisible():
+            self._sidebar.hide()
+            return
+        self.backRequested.emit()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -877,8 +895,10 @@ class ReaderView(QWidget):
         if old_mode != settings.reading_mode:
             self._render_current_mode() # Repaint content if mode shifted!
 
-        # Preserve progress roughly 
         ratio = self._progress_slider.value() / 1000.0
+        old_scroll = self._text.verticalScrollBar()
+        old_scroll_ratio = old_scroll.value() / max(old_scroll.maximum(), 1)
+        old_chapter_idx = self._current_chapter_idx
 
         self.reading_area.setStyleSheet(f"QWidget {{ background: {settings.background_color}; color: {settings.text_color}; }}")
 
@@ -906,7 +926,23 @@ class ReaderView(QWidget):
         self._text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self._update_line_wrap_width()
 
-        self._set_progress(ratio)
+        if settings.reading_mode == old_mode:
+            if settings.reading_mode == "full_scroll":
+                new_scroll = self._text.verticalScrollBar()
+                self._syncing = True
+                new_scroll.setValue(int(old_scroll_ratio * max(new_scroll.maximum(), 1)))
+                self._syncing = False
+            else:
+                self._current_chapter_idx = max(0, min(old_chapter_idx, len(self._chapters) - 1))
+                if settings.reading_mode == "chapter_scroll":
+                    new_scroll = self._text.verticalScrollBar()
+                    self._syncing = True
+                    new_scroll.setValue(int(old_scroll_ratio * max(new_scroll.maximum(), 1)))
+                    self._syncing = False
+        else:
+            self._set_progress(ratio)
+
+        self._update_progress_display(self._progress_slider.value() / 1000.0)
 
     def _update_line_wrap_width(self) -> None:
         max_w = self.reading_area.width()

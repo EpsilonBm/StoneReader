@@ -76,7 +76,7 @@ def test_import_books_deduplicates_by_path_and_persists(tmp_path: Path) -> None:
     assert len(reloaded.query("shelf", "title")) == 2
 
 
-def test_update_progress_persists_and_marks_read(tmp_path: Path) -> None:
+def test_update_progress_persists_without_auto_mark_read(tmp_path: Path) -> None:
     storage_path = tmp_path / "books.json"
     service = LibraryService(storage_path=storage_path)
     book_path = tmp_path / "sample.txt"
@@ -88,6 +88,6 @@ def test_update_progress_persists_and_marks_read(tmp_path: Path) -> None:
     reloaded = LibraryService(storage_path=storage_path)
     loaded = reloaded.get_by_path(str(book_path))
     assert loaded is not None
-    assert loaded.is_read is True
+    assert loaded.is_read is False
     assert loaded.read_progress == 1.0
     assert loaded.last_read_at is not None
