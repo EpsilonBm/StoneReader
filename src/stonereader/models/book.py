@@ -15,5 +15,8 @@ class Book:
     is_favorite: bool = False
     is_read: bool = False
     read_progress: float = 0.0
+    bookmarks: list[dict] = field(default_factory=list)
+    highlights: list[dict] = field(default_factory=list)
+    notes: list[dict] = field(default_factory=list)
     added_at: datetime = field(default_factory=datetime.now)
     last_read_at: datetime | None = None

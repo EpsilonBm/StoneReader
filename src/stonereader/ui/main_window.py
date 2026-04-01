@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self._reader = ReaderView()
         self._reader.backRequested.connect(self._back_to_shelf)
         self._reader.progressChanged.connect(self._library.update_progress)
+        self._reader.annotationsChanged.connect(self._library.update_annotations)
 
         self._stack.addWidget(self._shelf_page)
         self._stack.addWidget(self._reader)

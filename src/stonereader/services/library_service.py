@@ -79,6 +79,23 @@ class LibraryService:
             book.is_read = False
         self._save()
 
+    def update_annotations(
+        self,
+        file_path: str,
+        bookmarks: list[dict],
+        highlights: list[dict],
+        notes: list[dict],
+    ) -> None:
+        """Update annotation payload for a book and persist immediately."""
+        book = self.get_by_path(file_path)
+        if book is None:
+            return
+
+        book.bookmarks = list(bookmarks)
+        book.highlights = list(highlights)
+        book.notes = list(notes)
+        self._save()
+
     def _apply_scope(self, scope: Scope, selected_tag: str | None) -> list[Book]:
         if scope == "favorites":
             return [book for book in self._books if book.is_favorite]
@@ -145,6 +162,9 @@ class LibraryService:
             "is_favorite": book.is_favorite,
             "is_read": book.is_read,
             "read_progress": book.read_progress,
+            "bookmarks": list(book.bookmarks),
+            "highlights": list(book.highlights),
+            "notes": list(book.notes),
             "added_at": book.added_at.isoformat(),
             "last_read_at": book.last_read_at.isoformat() if book.last_read_at else None,
         }
@@ -161,6 +181,9 @@ class LibraryService:
             is_favorite=bool(raw.get("is_favorite", False)),
             is_read=bool(raw.get("is_read", False)),
             read_progress=float(raw.get("read_progress", 0.0)),
+            bookmarks=list(raw.get("bookmarks", [])),
+            highlights=list(raw.get("highlights", [])),
+            notes=list(raw.get("notes", [])),
             added_at=datetime.fromisoformat(added_at) if added_at else datetime.now(),
             last_read_at=datetime.fromisoformat(last_read_at) if last_read_at else None,
         )
