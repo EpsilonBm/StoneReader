@@ -15,6 +15,14 @@ class ChapterSpan:
     end: int
 
 
+@dataclass(slots=True)
+class ChapterItem:
+    """Represents a discrete chapter body and title."""
+
+    title: str
+    text: str
+
+
 _CHAPTER_PATTERNS = [
     re.compile(r"^\s*第[零一二三四五六七八九十百千万0-9]+[章节回卷部篇集].*$"),
     re.compile(r"^\s*chapter\s+[0-9ivxlcdm]+.*$", flags=re.IGNORECASE),
