@@ -203,34 +203,47 @@ class MainWindow(QMainWindow):
             }
             QPushButton, QComboBox {
                 min-height: 30px;
-                padding: 4px 12px;
+                padding: 4px 14px;
                 border: 1px solid #86a4c8;
-                border-radius: 10px;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #fefeff, stop:1 #eef4ff);
+                border-radius: 4px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #fefeff, stop:1 #eef4ff);
                 color: #213455;
                 font: 600 13px 'Microsoft YaHei UI';
             }
-            QPushButton:hover {
+            QPushButton:hover, QComboBox:hover {
                 background: #e5f0ff;
                 border-color: #5f88bb;
             }
-            QPushButton:pressed {
+            QPushButton:pressed, QComboBox:pressed {
                 background: #d6e7ff;
             }
+            QComboBox::drop-down {
+                border-left: 1px solid #c8d7e9;
+                width: 24px;
+                background: transparent;
+            }
             QComboBox QAbstractItemView {
+                border: 1px solid #86a4c8;
+                border-radius: 4px;
+                background: #fefeff;
                 color: #213455;
-                background: #ffffff;
+                outline: none;
+                selection-background-color: #dbe8fb;
+                selection-color: #1a2740;
+            }
+            QComboBox QAbstractItemView::item {
+                min-height: 28px;
+                padding: 4px 8px;
             }
             QListWidget {
                 background: rgba(255, 255, 255, 0.95);
                 border: 1px solid #c8d7e9;
-                border-radius: 10px;
+                border-radius: 8px;
                 color: #22324d;
             }
             QScrollArea {
                 border: 1px solid #c8d7e9;
-                border-radius: 10px;
+                border-radius: 8px;
                 background: rgba(255, 255, 255, 0.95);
             }
             """

@@ -106,6 +106,7 @@ class BookshelfView(QWidget):
         card.setFrameShape(QFrame.Shape.StyledPanel)
         card.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         card.setFixedSize(card_w, card_h)
+        card.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d0dae5; border-radius: 8px; } QFrame:hover { border-color: #7b9cc0; }")
         if book.file_path and isinstance(card, _ClickableFrame):
             card.clicked.connect(lambda _checked=False, path=book.file_path: self.openRequested.emit(path))
 
@@ -115,11 +116,12 @@ class BookshelfView(QWidget):
         cover = QLabel("封面")
         cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cover.setFixedHeight(cover_h)
-        cover.setStyleSheet("background-color: #dae3f1; border-radius: 6px;")
+        cover.setStyleSheet("background-color: #dae3f1; border-radius: 6px; color: #52616b; font-weight: bold;")
 
         title = QLabel(book.title)
         title.setWordWrap(True)
-        title.setFont(QFont("Microsoft YaHei UI", 10))
+        title.setFont(QFont("Microsoft YaHei UI", 10, QFont.Weight.Bold))
+        title.setStyleSheet("color: #1a2333;")
 
         author = QLabel(book.author)
         author.setStyleSheet("color: #52616b;")
