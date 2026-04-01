@@ -168,17 +168,29 @@ class InlineNoteEditor(QFrame):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setStyleSheet(
             "QFrame#InlineNoteEditor { background: rgba(255,255,255,0.98); border: 1px solid #cbd5e1; border-radius: 10px; }"
-            "QTextEdit { border: 1px solid #dbe3ef; border-radius: 6px; padding: 6px; background: white; }"
-            "QPushButton { border: none; border-radius: 6px; padding: 6px 10px; background: transparent; }"
+            "QTextEdit { border: 1px solid #a8b5c9; border-radius: 6px; padding: 6px; background: #fffef7; color: #111827; }"
+            "QPushButton { border: none; border-radius: 6px; padding: 6px 10px; background: transparent; color: #0f172a; }"
             "QPushButton:hover { background: #e2e8f0; }"
+            "QToolButton { border: none; border-radius: 6px; padding: 4px; background: transparent; color: #334155; }"
+            "QToolButton:hover { background: #e2e8f0; color: #0f172a; }"
         )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
         title = QLabel("添加笔记")
         title.setStyleSheet("font-weight: bold; color: #1f2937;")
+        self._close = QToolButton(self)
+        self._close.setText("✕")
+        self._close.setToolTip("关闭")
+        self._close.setFixedSize(22, 22)
+        self._close.clicked.connect(self._on_cancel)
+        head.addWidget(title)
+        head.addStretch(1)
+        head.addWidget(self._close)
         self._edit = QTextEdit(self)
         self._edit.setPlaceholderText("输入笔记内容...")
         self._edit.setMinimumHeight(88)
@@ -192,7 +204,7 @@ class InlineNoteEditor(QFrame):
         actions.addWidget(self._cancel)
         actions.addWidget(self._save)
 
-        layout.addWidget(title)
+        layout.addLayout(head)
         layout.addWidget(self._edit)
         layout.addLayout(actions)
         self.hide()
@@ -224,17 +236,29 @@ class NotePreviewPopup(QFrame):
             "QFrame#NotePreviewPopup { background: #fefdf8; border: 1px solid #d4c593; border-radius: 10px; }"
             "QLabel#NoteTitle { color: #5a460f; font-weight: bold; }"
             "QLabel#NoteBody { color: #1f2937; background: #fff8de; border: 1px solid #e6d7a8; border-radius: 8px; padding: 8px; }"
+            "QToolButton { border: none; border-radius: 6px; padding: 4px; color: #6b7280; background: transparent; }"
+            "QToolButton:hover { color: #111827; background: #f1f5f9; }"
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
         self._title = QLabel("笔记")
         self._title.setObjectName("NoteTitle")
+        self._close = QToolButton(self)
+        self._close.setText("✕")
+        self._close.setToolTip("关闭")
+        self._close.setFixedSize(22, 22)
+        self._close.clicked.connect(self.hide)
+        head.addWidget(self._title)
+        head.addStretch(1)
+        head.addWidget(self._close)
         self._body = QLabel("")
         self._body.setObjectName("NoteBody")
         self._body.setWordWrap(True)
         self._body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self._title)
+        layout.addLayout(head)
         layout.addWidget(self._body)
         self.hide()
 
@@ -560,6 +584,7 @@ class SearchPanel(QWidget):
     matchSelected = pyqtSignal(int, int)
     prevRequested = pyqtSignal()
     nextRequested = pyqtSignal()
+    closeRequested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -580,9 +605,17 @@ class SearchPanel(QWidget):
         row = QHBoxLayout()
         self.input = QLineEdit()
         self.input.setPlaceholderText("搜索当前视图...")
+        self.input.setStyleSheet(
+            "QLineEdit { background: #ffffff; color: #0f172a; border: 1px solid #94a3b8; border-radius: 6px; padding: 4px 8px; }"
+            "QLineEdit:focus { border-color: #3b82f6; }"
+        )
         self.input.returnPressed.connect(self._do_search)
         self._btn = QPushButton("搜索")
         self._btn.clicked.connect(self._do_search)
+        self._btn.setStyleSheet(
+            "QPushButton { background: #e2e8f0; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 6px; padding: 4px 10px; }"
+            "QPushButton:hover { background: #dbe5f1; }"
+        )
 
         row.addWidget(self.input, 1)
         row.addWidget(self._btn)
@@ -594,8 +627,16 @@ class SearchPanel(QWidget):
         self._next_btn = QPushButton("↓")
         self._next_btn.setFixedSize(28, 24)
         self._next_btn.clicked.connect(self.nextRequested)
+        self._prev_btn.setStyleSheet(
+            "QPushButton { background: #e5eefb; color: #0f172a; border: 1px solid #b7c8e6; border-radius: 6px; font-weight: bold; }"
+            "QPushButton:hover { background: #d8e7fb; }"
+        )
+        self._next_btn.setStyleSheet(
+            "QPushButton { background: #e5eefb; color: #0f172a; border: 1px solid #b7c8e6; border-radius: 6px; font-weight: bold; }"
+            "QPushButton:hover { background: #d8e7fb; }"
+        )
         self._counter = QLabel("0/0")
-        self._counter.setStyleSheet("color: #334155;")
+        self._counter.setStyleSheet("color: #0f172a; font-weight: 600;")
         nav.addWidget(self._prev_btn)
         nav.addWidget(self._next_btn)
         nav.addStretch(1)
@@ -609,7 +650,11 @@ class SearchPanel(QWidget):
         self._results.setStyleSheet("QListWidget { border: 1px solid #d5dbe6; border-radius: 6px; background: #ffffff; }")
 
         close_btn = QPushButton("关闭搜索")
-        close_btn.clicked.connect(self.hide)
+        close_btn.clicked.connect(self.closeRequested)
+        close_btn.setStyleSheet(
+            "QPushButton { background: #f1f5f9; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 6px; }"
+            "QPushButton:hover { background: #e2e8f0; }"
+        )
 
         result_label = QLabel("搜索结果 (单击跳转):")
         box_layout.addWidget(result_label)
@@ -619,8 +664,7 @@ class SearchPanel(QWidget):
 
         self.setStyleSheet(
             "QWidget#SearchPanel { background: white; border: 1px solid #c8d7e9; border-radius: 8px; }"
-            "QPushButton { background: transparent; border: none; border-radius: 4px; }"
-            "QPushButton:hover { background: #e2e8f0; }"
+            "QListWidget::item { color: #0f172a; }"
         )
         self.hide()
 
@@ -628,6 +672,7 @@ class SearchPanel(QWidget):
         self._results.clear()
         if not matches:
             label = QLabel("未找到结果。")
+            label.setStyleSheet("color: #334155; background: transparent; padding: 6px;")
             item = QListWidgetItem()
             item.setSizeHint(label.sizeHint())
             self._results.addItem(item)
@@ -639,7 +684,7 @@ class SearchPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, (start, end))
             label = QLabel(ctx)
             label.setWordWrap(True)
-            label.setStyleSheet("padding: 8px; border-bottom: 1px solid #ebebeb; background: transparent;")
+            label.setStyleSheet("padding: 8px; border-bottom: 1px solid #dbe3ef; background: #f8fafc; color: #0f172a;")
             item.setSizeHint(label.sizeHint())
             self._results.addItem(item)
             self._results.setItemWidget(item, label)
@@ -839,6 +884,7 @@ class ReaderView(QWidget):
         self._search_panel.matchSelected.connect(self._goto_match)
         self._search_panel.prevRequested.connect(self._goto_prev_match)
         self._search_panel.nextRequested.connect(self._goto_next_match)
+        self._search_panel.closeRequested.connect(self._close_search_panel)
         shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         shortcut.activated.connect(self._toggle_search)
         self._esc_shortcut = QShortcut(QKeySequence("Esc"), self)
@@ -1588,18 +1634,22 @@ class ReaderView(QWidget):
 
     def _toggle_search(self) -> None:
         if self._search_panel.isVisible():
-            self._search_panel.hide()
-            self._search_matches = []
-            self._search_idx = -1
-            self._search_extras = []
-            self._search_panel.set_counter(0, 0)
-            self._apply_extra_selections()
+            self._close_search_panel()
         else:
             self._search_panel.show()
             self._search_panel.raise_()
             self._reposition_search_panel()
             self._search_panel.input.setFocus()
             self._search_panel.input.selectAll()
+
+    def _close_search_panel(self) -> None:
+        self._search_panel.hide()
+        self._search_matches = []
+        self._search_idx = -1
+        self._search_extras = []
+        self._search_panel.set_counter(0, 0)
+        self._search_panel.set_results([])
+        self._apply_extra_selections()
 
     def _reposition_search_panel(self) -> None:
         if not hasattr(self, '_search_panel'): return

@@ -255,14 +255,25 @@ class MainWindow(QMainWindow):
                 self._sidebar.set_tags(self._library.all_tags())
                 self._reload_books()
         elif chosen is mark_read:
-            self._library.set_read_status(file_path, not book.is_read)
-            self._show_toast("已标记为已读" if not book.is_read else "已取消已读")
+            new_state = not book.is_read
+            self._library.set_read_status(file_path, new_state)
+            self._show_toast("已标记为已读" if new_state else "已取消已读")
             self._reload_books()
         elif chosen is mark_fav:
-            self._library.set_favorite_status(file_path, not book.is_favorite)
-            self._show_toast("已添加到最爱" if not book.is_favorite else "已取消最爱")
+            new_state = not book.is_favorite
+            self._library.set_favorite_status(file_path, new_state)
+            self._show_toast("已添加到最爱" if new_state else "已取消最爱")
             self._reload_books()
         elif chosen is remove:
+            confirm = QMessageBox.question(
+                self,
+                "确认删除",
+                f"确定要从书架删除《{book.title}》吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
             self._library.remove_book(file_path)
             self._sidebar.set_formats(self._library.all_formats())
             self._sidebar.set_tags(self._library.all_tags())
@@ -279,12 +290,23 @@ class MainWindow(QMainWindow):
                 self._library.add_custom_tag(file_path, text.strip())
                 self._sidebar.set_tags(self._library.all_tags())
         elif action == "read":
-            self._library.set_read_status(file_path, not book.is_read)
-            self._show_toast("已标记为已读" if not book.is_read else "已取消已读")
+            new_state = not book.is_read
+            self._library.set_read_status(file_path, new_state)
+            self._show_toast("已标记为已读" if new_state else "已取消已读")
         elif action == "favorite":
-            self._library.set_favorite_status(file_path, not book.is_favorite)
-            self._show_toast("已添加到最爱" if not book.is_favorite else "已取消最爱")
+            new_state = not book.is_favorite
+            self._library.set_favorite_status(file_path, new_state)
+            self._show_toast("已添加到最爱" if new_state else "已取消最爱")
         elif action == "delete":
+            confirm = QMessageBox.question(
+                self,
+                "确认删除",
+                f"确定要从书架删除《{book.title}》吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
             self._library.remove_book(file_path)
             self._sidebar.set_formats(self._library.all_formats())
             self._sidebar.set_tags(self._library.all_tags())
