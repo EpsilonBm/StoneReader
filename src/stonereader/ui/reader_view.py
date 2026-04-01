@@ -9,8 +9,8 @@ from pathlib import Path
 import re
 import html
 
-from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont, QKeySequence, QShortcut, QIcon, QAction
+from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QSize, QEvent
+from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont, QKeySequence, QShortcut, QIcon, QAction, QPainter
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QColorDialog,
@@ -18,17 +18,19 @@ from PyQt6.QtWidgets import (
     QFontComboBox,
     QFrame,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QKeySequenceEdit,
     QSlider,
     QSpinBox,
     QStackedWidget,
+    QStyle,
+    QStyleOptionSlider,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -118,6 +120,136 @@ class SelectionQuickBar(QFrame):
             row.addWidget(btn)
 
         self.hide()
+
+
+class ChapterProgressSlider(QSlider):
+    def __init__(self, orientation: Qt.Orientation, parent: QWidget | None = None) -> None:
+        super().__init__(orientation, parent)
+        self._markers: list[float] = []
+
+    def set_markers(self, markers: list[float]) -> None:
+        self._markers = [m for m in markers if 0.0 < m < 1.0]
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self._markers:
+            return
+
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        groove = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider,
+            option,
+            QStyle.SubControl.SC_SliderGroove,
+            self,
+        )
+        if groove.width() <= 0:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(60, 64, 67, 140))
+
+        y = groove.center().y()
+        for ratio in self._markers:
+            x = groove.left() + int(ratio * groove.width())
+            painter.drawEllipse(QPoint(x, y), 2, 2)
+
+
+class InlineNoteEditor(QFrame):
+    submitRequested = pyqtSignal(str)
+    canceled = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("InlineNoteEditor")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(
+            "QFrame#InlineNoteEditor { background: rgba(255,255,255,0.98); border: 1px solid #cbd5e1; border-radius: 10px; }"
+            "QTextEdit { border: 1px solid #dbe3ef; border-radius: 6px; padding: 6px; background: white; }"
+            "QPushButton { border: none; border-radius: 6px; padding: 6px 10px; background: transparent; }"
+            "QPushButton:hover { background: #e2e8f0; }"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        title = QLabel("添加笔记")
+        title.setStyleSheet("font-weight: bold; color: #1f2937;")
+        self._edit = QTextEdit(self)
+        self._edit.setPlaceholderText("输入笔记内容...")
+        self._edit.setMinimumHeight(88)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self._cancel = QPushButton("取消", self)
+        self._save = QPushButton("保存", self)
+        self._cancel.clicked.connect(self._on_cancel)
+        self._save.clicked.connect(self._on_submit)
+        actions.addWidget(self._cancel)
+        actions.addWidget(self._save)
+
+        layout.addWidget(title)
+        layout.addWidget(self._edit)
+        layout.addLayout(actions)
+        self.hide()
+
+    def open_at(self, pos: QPoint) -> None:
+        self.move(pos)
+        self.resize(280, 170)
+        self.show()
+        self.raise_()
+        self._edit.setFocus()
+
+    def clear_text(self) -> None:
+        self._edit.clear()
+
+    def _on_submit(self) -> None:
+        self.submitRequested.emit(self._edit.toPlainText().strip())
+
+    def _on_cancel(self) -> None:
+        self.hide()
+        self.canceled.emit()
+
+
+class NotePreviewPopup(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("NotePreviewPopup")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(
+            "QFrame#NotePreviewPopup { background: #fefdf8; border: 1px solid #d4c593; border-radius: 10px; }"
+            "QLabel#NoteTitle { color: #5a460f; font-weight: bold; }"
+            "QLabel#NoteBody { color: #1f2937; background: #fff8de; border: 1px solid #e6d7a8; border-radius: 8px; padding: 8px; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        self._title = QLabel("笔记")
+        self._title.setObjectName("NoteTitle")
+        self._body = QLabel("")
+        self._body.setObjectName("NoteBody")
+        self._body.setWordWrap(True)
+        self._body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self._title)
+        layout.addWidget(self._body)
+        self.hide()
+
+    def show_note(self, global_pos: QPoint, text: str) -> None:
+        self._body.setText(text or "(空笔记)")
+        self.resize(320, 180)
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        local = parent.mapFromGlobal(global_pos)
+        x = min(max(8, local.x() + 10), max(8, parent.width() - self.width() - 8))
+        y = min(max(8, local.y() + 10), max(8, parent.height() - self.height() - 8))
+        self.move(x, y)
+        self.show()
+        self.raise_()
 
 
 class ReaderSettingsPanel(QWidget):
@@ -277,6 +409,7 @@ class ReaderSidebar(QWidget):
     """Left sidebar for TOC, bookmarks, highlights and notes."""
     chapterSelected = pyqtSignal(int)
     annotationSelected = pyqtSignal(str, int)
+    annotationDeleteRequested = pyqtSignal(str, int)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -320,12 +453,18 @@ class ReaderSidebar(QWidget):
 
         self._bm_list = QListWidget()
         self._bm_list.itemClicked.connect(lambda item: self._emit_annotation("bookmark", item))
+        self._bm_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._bm_list.customContextMenuRequested.connect(lambda pos: self._delete_from_context("bookmark", self._bm_list, pos))
 
         self._hl_list = QListWidget()
         self._hl_list.itemClicked.connect(lambda item: self._emit_annotation("highlight", item))
+        self._hl_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._hl_list.customContextMenuRequested.connect(lambda pos: self._delete_from_context("highlight", self._hl_list, pos))
 
         self._note_list = QListWidget()
         self._note_list.itemClicked.connect(lambda item: self._emit_annotation("note", item))
+        self._note_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._note_list.customContextMenuRequested.connect(lambda pos: self._delete_from_context("note", self._note_list, pos))
 
         self._stack.addWidget(self._toc_list)
         self._stack.addWidget(self._bm_list)
@@ -361,28 +500,66 @@ class ReaderSidebar(QWidget):
         self.chapterSelected.emit(idx)
 
     def populate_annotations(self, bookmarks: list[dict], highlights: list[dict], notes: list[dict]) -> None:
-        self._fill_annotation_list(self._bm_list, bookmarks)
-        self._fill_annotation_list(self._hl_list, highlights)
-        self._fill_annotation_list(self._note_list, notes)
+        self._fill_annotation_list(self._bm_list, bookmarks, "bookmark")
+        self._fill_annotation_list(self._hl_list, highlights, "highlight")
+        self._fill_annotation_list(self._note_list, notes, "note")
 
-    def _fill_annotation_list(self, list_widget: QListWidget, records: list[dict]) -> None:
+    def _fill_annotation_list(self, list_widget: QListWidget, records: list[dict], kind: str) -> None:
+        # QListWidget with setItemWidget may keep stale widgets if not explicitly detached.
+        while list_widget.count() > 0:
+            item = list_widget.takeItem(0)
+            widget = list_widget.itemWidget(item)
+            if widget is not None:
+                list_widget.removeItemWidget(item)
+                widget.deleteLater()
+            del item
         list_widget.clear()
         for idx, rec in enumerate(records):
             preview = rec.get("preview", "")
             chapter = rec.get("chapter_title", "")
-            text = f"{chapter} | {preview}" if chapter else preview
-            item = QListWidgetItem(text[:120])
+            note_text = rec.get("note", "") if kind == "note" else ""
+            head = f"{chapter} | {preview}" if chapter else preview
+            text = f"{head}\n{note_text}" if note_text else head
+            item = QListWidgetItem("" if kind == "note" else text[:120])
             item.setToolTip(text)
             item.setData(Qt.ItemDataRole.UserRole, idx)
             list_widget.addItem(item)
+            if kind == "note":
+                row = QWidget(list_widget)
+                lay = QVBoxLayout(row)
+                lay.setContentsMargins(4, 4, 4, 4)
+                lay.setSpacing(2)
+                head_label = QLabel(head)
+                head_label.setStyleSheet("font-weight: bold; color: #1f2937;")
+                head_label.setWordWrap(True)
+                note_label = QLabel(note_text)
+                note_label.setStyleSheet("color: #334155;")
+                note_label.setWordWrap(True)
+                lay.addWidget(head_label)
+                lay.addWidget(note_label)
+                item.setSizeHint(row.sizeHint())
+                list_widget.setItemWidget(item, row)
 
     def _emit_annotation(self, kind: str, item: QListWidgetItem) -> None:
         idx = item.data(Qt.ItemDataRole.UserRole)
         self.annotationSelected.emit(kind, idx)
 
+    def _delete_from_context(self, kind: str, list_widget: QListWidget, pos: QPoint) -> None:
+        item = list_widget.itemAt(pos)
+        if item is None:
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        menu = QMenu(list_widget)
+        delete_action = menu.addAction("删除")
+        chosen = menu.exec(list_widget.mapToGlobal(pos))
+        if chosen is delete_action:
+            self.annotationDeleteRequested.emit(kind, idx)
+
 class SearchPanel(QWidget):
     searchRequested = pyqtSignal(str)
     matchSelected = pyqtSignal(int, int)
+    prevRequested = pyqtSignal()
+    nextRequested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -394,6 +571,12 @@ class SearchPanel(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
+        box = QFrame(self)
+        box.setStyleSheet("background: #f5f7fb; border: 1px solid #d5dbe6; border-radius: 8px;")
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(8, 8, 8, 8)
+        box_layout.setSpacing(6)
+
         row = QHBoxLayout()
         self.input = QLineEdit()
         self.input.setPlaceholderText("搜索当前视图...")
@@ -404,18 +587,41 @@ class SearchPanel(QWidget):
         row.addWidget(self.input, 1)
         row.addWidget(self._btn)
 
+        nav = QHBoxLayout()
+        self._prev_btn = QPushButton("↑")
+        self._prev_btn.setFixedSize(28, 24)
+        self._prev_btn.clicked.connect(self.prevRequested)
+        self._next_btn = QPushButton("↓")
+        self._next_btn.setFixedSize(28, 24)
+        self._next_btn.clicked.connect(self.nextRequested)
+        self._counter = QLabel("0/0")
+        self._counter.setStyleSheet("color: #334155;")
+        nav.addWidget(self._prev_btn)
+        nav.addWidget(self._next_btn)
+        nav.addStretch(1)
+        nav.addWidget(self._counter)
+
+        box_layout.addLayout(row)
+        box_layout.addLayout(nav)
+
         self._results = QListWidget()
         self._results.itemClicked.connect(self._on_result_clicked)
+        self._results.setStyleSheet("QListWidget { border: 1px solid #d5dbe6; border-radius: 6px; background: #ffffff; }")
 
         close_btn = QPushButton("关闭搜索")
         close_btn.clicked.connect(self.hide)
 
-        layout.addLayout(row)
-        layout.addWidget(QLabel("搜索结果 (单击跳转):"))
-        layout.addWidget(self._results, 1)
-        layout.addWidget(close_btn)
+        result_label = QLabel("搜索结果 (单击跳转):")
+        box_layout.addWidget(result_label)
+        box_layout.addWidget(self._results, 1)
+        box_layout.addWidget(close_btn)
+        layout.addWidget(box, 1)
 
-        self.setStyleSheet("""QWidget#SearchPanel { background: white; border: 1px solid #c8d7e9; border-radius: 8px; }""")
+        self.setStyleSheet(
+            "QWidget#SearchPanel { background: white; border: 1px solid #c8d7e9; border-radius: 8px; }"
+            "QPushButton { background: transparent; border: none; border-radius: 4px; }"
+            "QPushButton:hover { background: #e2e8f0; }"
+        )
         self.hide()
 
     def set_results(self, matches: list[tuple[int, int, str]]):
@@ -437,6 +643,12 @@ class SearchPanel(QWidget):
             item.setSizeHint(label.sizeHint())
             self._results.addItem(item)
             self._results.setItemWidget(item, label)
+
+    def set_counter(self, current: int, total: int) -> None:
+        if total <= 0:
+            self._counter.setText("0/0")
+            return
+        self._counter.setText(f"{current}/{total}")
 
     def _do_search(self):
         term = self.input.text().strip()
@@ -468,6 +680,16 @@ class ReaderView(QWidget):
         self._bookmarks: list[dict] = []
         self._highlights: list[dict] = []
         self._notes: list[dict] = []
+        self._search_matches: list[tuple[int, int, str]] = []
+        self._search_idx: int = -1
+        self._search_extras: list[QTextEdit.ExtraSelection] = []
+        self._annotation_extras: list[QTextEdit.ExtraSelection] = []
+        self._annotation_markers: list[QWidget] = []
+        self._pending_note_record: dict | None = None
+        self._middle_dragging = False
+        self._middle_drag_y = 0
+        self._middle_drag_scroll = 0
+        self._note_preview_popup: NotePreviewPopup | None = None
 
         # Layout Setup
         self.main_layout = QHBoxLayout(self)
@@ -478,6 +700,7 @@ class ReaderView(QWidget):
         self._sidebar = ReaderSidebar()
         self._sidebar.chapterSelected.connect(self._jump_to_chapter)
         self._sidebar.annotationSelected.connect(self._jump_to_annotation)
+        self._sidebar.annotationDeleteRequested.connect(self._delete_annotation)
         self._sidebar.hide()
 
         # 2. Central Reading Area
@@ -570,6 +793,7 @@ class ReaderView(QWidget):
         self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._text.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
+        self._text.viewport().installEventFilter(self)
         
         # Side next button
         self._btn_next_area = QPushButton("")
@@ -588,7 +812,7 @@ class ReaderView(QWidget):
         bottom_bar = QHBoxLayout()
         bottom_bar.setContentsMargins(20, 10, 20, 10)
 
-        self._progress_slider = QSlider(Qt.Orientation.Horizontal)
+        self._progress_slider = ChapterProgressSlider(Qt.Orientation.Horizontal)
         self._progress_slider.setRange(0, 1000)
         self._progress_slider.setStyleSheet("QSlider::handle:horizontal { background: rgba(0,0,0,0.3); width: 8px; border-radius: 4px; margin: -5px 0; } QSlider::groove:horizontal { background: rgba(0,0,0,0.1); height: 4px; border-radius: 2px; }")
         self._progress_slider.valueChanged.connect(self._on_slider_changed)
@@ -613,6 +837,8 @@ class ReaderView(QWidget):
         self._search_panel = SearchPanel(self)
         self._search_panel.searchRequested.connect(self._perform_search)
         self._search_panel.matchSelected.connect(self._goto_match)
+        self._search_panel.prevRequested.connect(self._goto_prev_match)
+        self._search_panel.nextRequested.connect(self._goto_next_match)
         shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         shortcut.activated.connect(self._toggle_search)
         self._esc_shortcut = QShortcut(QKeySequence("Esc"), self)
@@ -626,6 +852,11 @@ class ReaderView(QWidget):
         self._quick_bar.bookmarkClicked.connect(self._add_bookmark_from_selection)
         self._quick_bar.highlightClicked.connect(self._add_highlight_from_selection)
         self._quick_bar.noteClicked.connect(self._add_note_from_selection)
+
+        self._inline_note_editor = InlineNoteEditor(self)
+        self._inline_note_editor.submitRequested.connect(self._submit_inline_note)
+        self._inline_note_editor.canceled.connect(self._cancel_inline_note)
+        self._note_preview_popup = NotePreviewPopup(self)
 
         self.main_layout.addWidget(self._sidebar, 0)
         self.main_layout.addWidget(self.reading_area, 1)
@@ -651,6 +882,29 @@ class ReaderView(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._update_line_wrap_width()
+        self._refresh_annotation_visuals()
+        self._reposition_search_panel()
+        if self._note_preview_popup and self._note_preview_popup.isVisible():
+            self._note_preview_popup.hide()
+
+    def eventFilter(self, obj, event):
+        if obj is self._text.viewport():
+            if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.MiddleButton:
+                self._middle_dragging = True
+                self._middle_drag_y = event.globalPosition().toPoint().y()
+                self._middle_drag_scroll = self._text.verticalScrollBar().value()
+                self._text.viewport().setCursor(Qt.CursorShape.SizeVerCursor)
+                return True
+            if event.type() == QEvent.Type.MouseMove and self._middle_dragging:
+                delta = event.globalPosition().toPoint().y() - self._middle_drag_y
+                bar = self._text.verticalScrollBar()
+                bar.setValue(self._middle_drag_scroll - int(delta * 2.2))
+                return True
+            if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.MiddleButton:
+                self._middle_dragging = False
+                self._text.viewport().unsetCursor()
+                return True
+        return super().eventFilter(obj, event)
 
     def load_book(self, book: Book) -> None:
         self._book = book
@@ -705,10 +959,31 @@ class ReaderView(QWidget):
     def _finish_load(self, saved_progress: float):
         self._sidebar.populate_toc(self._chapters)
         self._sidebar.populate_annotations(self._bookmarks, self._highlights, self._notes)
+        self._update_chapter_markers()
         self._current_chapter_idx = 0
         self._render_current_mode()
         self._set_progress(saved_progress)
         self._apply_visual_settings(self._visual_settings)
+
+    def _update_chapter_markers(self) -> None:
+        if not self._chapters:
+            self._progress_slider.set_markers([])
+            return
+        mode = self._visual_settings.reading_mode
+        markers: list[float] = []
+        if mode == "full_scroll":
+            total = sum(len(ch.text) for ch in self._chapters)
+            if total <= 0:
+                self._progress_slider.set_markers([])
+                return
+            acc = 0
+            for idx, ch in enumerate(self._chapters[:-1]):
+                acc += len(ch.text)
+                markers.append(acc / total)
+        else:
+            denom = max(1, len(self._chapters) - 1)
+            markers = [idx / denom for idx in range(1, len(self._chapters) - 1)]
+        self._progress_slider.set_markers(markers)
 
     # ----------------------------------------------------
     # MODE RENDERING & NAVIGATION LOGIC
@@ -734,6 +1009,8 @@ class ReaderView(QWidget):
                 self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             else: # chapter_scroll
                 self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._update_chapter_markers()
+        self._refresh_annotation_visuals()
 
     def _go_prev(self):
         mode = self._visual_settings.reading_mode
@@ -828,9 +1105,7 @@ class ReaderView(QWidget):
 
         mode = self._visual_settings.reading_mode
         if mode != "full_scroll":
-            # For chapter scroll, we don't move the global slider based on local chapter scroll, 
-            # or maybe we do tiny fractions. To keep it simple, we leave the slider representing chapter index.
-            # Except paginated mode just hides it and drives via Next/Prev.
+            self._refresh_annotation_visuals()
             return
 
         scrollbar = self._text.verticalScrollBar()
@@ -842,6 +1117,7 @@ class ReaderView(QWidget):
         self._syncing = False
 
         self._update_progress_display(ratio)
+        self._refresh_annotation_visuals()
 
     def _set_progress(self, ratio: float) -> None:
         bounded = min(max(ratio, 0.0), 1.0)
@@ -994,8 +1270,61 @@ class ReaderView(QWidget):
             act_note = QAction(QIcon(_icon_path("note")), "添加笔记", self)
             act_note.triggered.connect(self._add_note_from_selection)
             menu.addAction(act_note)
+        else:
+            menu.addSeparator()
+            for kind, label in (("bookmark", "删除附近书签"), ("highlight", "删除附近标记"), ("note", "删除附近笔记")):
+                found = self._find_nearest_annotation(kind)
+                if found is None:
+                    continue
+                idx = found
+                act = QAction(label, self)
+                act.triggered.connect(lambda _=False, k=kind, i=idx: self._delete_annotation(k, i))
+                menu.addAction(act)
 
         menu.exec(self._text.mapToGlobal(pos))
+
+    def _find_nearest_annotation(self, kind: str) -> int | None:
+        source = {
+            "bookmark": self._bookmarks,
+            "highlight": self._highlights,
+            "note": self._notes,
+        }.get(kind, [])
+        if not source:
+            return None
+        cursor = self._text.textCursor()
+        current_chapter = self._current_chapter_idx
+        mode = self._visual_settings.reading_mode
+        if mode == "full_scroll":
+            pos = cursor.position()
+            # derive chapter and local position in full-scroll document
+            offset = 0
+            chapter_idx = 0
+            local_pos = 0
+            for i, ch in enumerate(self._chapters):
+                start = offset + len(f"【 {ch.title} 】\n")
+                end = start + len(ch.text)
+                if start <= pos <= end:
+                    chapter_idx = i
+                    local_pos = pos - start
+                    break
+                offset = end + (3 if i < len(self._chapters) - 1 else 0)
+        else:
+            chapter_idx = current_chapter
+            head = len(f"【 {self._chapters[chapter_idx].title} 】\n\n") if self._chapters else 0
+            local_pos = max(0, cursor.position() - head)
+
+        best_idx = None
+        best_dist = 10**9
+        for idx, rec in enumerate(source):
+            if int(rec.get("chapter_index", -1)) != chapter_idx:
+                continue
+            dist = abs(int(rec.get("local_start", 0)) - local_pos)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+        if best_idx is None or best_dist > 30:
+            return None
+        return best_idx
 
     def _selection_record(self) -> dict | None:
         cursor = self._text.textCursor()
@@ -1058,18 +1387,175 @@ class ReaderView(QWidget):
         rec = self._selection_record()
         if rec is None:
             return
-        text, ok = QInputDialog.getMultiLineText(self, "添加笔记", "笔记内容:")
-        if not ok:
+        self._pending_note_record = rec
+        self._quick_bar.hide()
+        cursor = self._text.textCursor()
+        start_cursor = QTextCursor(self._text.document())
+        start_cursor.setPosition(cursor.selectionStart())
+        rect = self._text.cursorRect(start_cursor)
+        local = self._text.mapTo(self, rect.bottomLeft())
+        x = max(8, min(local.x(), self.width() - 290))
+        y = min(self.height() - 180, max(8, local.y() + 10))
+        self._inline_note_editor.clear_text()
+        self._inline_note_editor.open_at(QPoint(x, y))
+
+    def _submit_inline_note(self, text: str) -> None:
+        if self._pending_note_record is None:
+            self._inline_note_editor.hide()
             return
-        rec["note"] = text.strip()
+        rec = dict(self._pending_note_record)
+        rec["note"] = text
         self._notes.append(rec)
+        self._pending_note_record = None
+        self._inline_note_editor.hide()
         self._after_annotation_changed()
+
+    def _cancel_inline_note(self) -> None:
+        self._pending_note_record = None
 
     def _after_annotation_changed(self) -> None:
         self._quick_bar.hide()
         self._sidebar.populate_annotations(self._bookmarks, self._highlights, self._notes)
+        self._refresh_annotation_visuals()
         if self._book and self._book.file_path:
             self.annotationsChanged.emit(self._book.file_path, self._bookmarks, self._highlights, self._notes)
+
+    def _delete_annotation(self, kind: str, idx: int) -> None:
+        source = {
+            "bookmark": self._bookmarks,
+            "highlight": self._highlights,
+            "note": self._notes,
+        }.get(kind)
+        if source is None or idx < 0 or idx >= len(source):
+            return
+        source.pop(idx)
+        self._after_annotation_changed()
+
+    def _refresh_annotation_visuals(self) -> None:
+        for marker in self._annotation_markers:
+            marker.deleteLater()
+        self._annotation_markers.clear()
+        self._annotation_extras.clear()
+
+        if not self._chapters:
+            self._apply_extra_selections()
+            return
+
+        mode = self._visual_settings.reading_mode
+        highlight_fmt = QTextCharFormat()
+        highlight_fmt.setBackground(QColor("#ffef88"))
+        note_fmt = QTextCharFormat()
+        note_fmt.setBackground(QColor("#ffe08a"))
+
+        for rec in self._highlights:
+            pos = self._annotation_position_in_current_text(rec, mode)
+            if pos is None:
+                continue
+            start, length = pos
+            cur = QTextCursor(self._text.document())
+            cur.setPosition(start)
+            cur.setPosition(start + max(length, 1), QTextCursor.MoveMode.KeepAnchor)
+            ex = QTextEdit.ExtraSelection()
+            ex.cursor = cur
+            ex.format = highlight_fmt
+            self._annotation_extras.append(ex)
+
+        marker_map: dict[int, dict] = {}
+
+        for rec in self._notes:
+            pos = self._annotation_position_in_current_text(rec, mode)
+            if pos is None:
+                continue
+            start, length = pos
+            cur = QTextCursor(self._text.document())
+            cur.setPosition(start)
+            cur.setPosition(start + max(length, 1), QTextCursor.MoveMode.KeepAnchor)
+            ex = QTextEdit.ExtraSelection()
+            ex.cursor = cur
+            ex.format = note_fmt
+            self._annotation_extras.append(ex)
+            entry = marker_map.setdefault(start, {"bookmark": False, "note": []})
+            entry["note"].append(rec.get("note", ""))
+
+        for rec in self._bookmarks:
+            pos = self._annotation_position_in_current_text(rec, mode)
+            if pos is None:
+                continue
+            start, _ = pos
+            entry = marker_map.setdefault(start, {"bookmark": False, "note": []})
+            entry["bookmark"] = True
+
+        for pos, info in marker_map.items():
+            self._add_marker_widget(pos, bool(info["bookmark"]), info["note"])
+
+        self._apply_extra_selections()
+
+    def _annotation_position_in_current_text(self, rec: dict, mode: str) -> tuple[int, int] | None:
+        chapter_idx = int(rec.get("chapter_index", -1))
+        if chapter_idx < 0 or chapter_idx >= len(self._chapters):
+            return None
+        local_start = int(rec.get("local_start", 0))
+        selected = rec.get("selected_text", "")
+        length = max(len(selected), 1)
+
+        if mode == "full_scroll":
+            offset = 0
+            for i, ch in enumerate(self._chapters):
+                offset += len(f"【 {ch.title} 】\n")
+                if i == chapter_idx:
+                    return (offset + local_start, length)
+                offset += len(ch.text)
+                if i < len(self._chapters) - 1:
+                    offset += 3
+            return None
+
+        if chapter_idx != self._current_chapter_idx:
+            return None
+        base = len(f"【 {self._chapters[chapter_idx].title} 】\n\n")
+        return (base + local_start, length)
+
+    def _add_marker_widget(self, doc_pos: int, has_bookmark: bool, notes: list[str]) -> None:
+        cur = QTextCursor(self._text.document())
+        cur.setPosition(max(0, doc_pos))
+        rect = self._text.cursorRect(cur)
+        panel = QWidget(self._text.viewport())
+        row = QHBoxLayout(panel)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(1)
+
+        if has_bookmark:
+            bm_btn = QToolButton(panel)
+            bm_btn.setIcon(QIcon(_icon_path("bookmark")))
+            bm_btn.setIconSize(QSize(12, 12))
+            bm_btn.setToolTip("书签")
+            bm_btn.setStyleSheet("QToolButton { border: none; padding: 0px; background: transparent; }")
+            row.addWidget(bm_btn)
+
+        if notes:
+            note_btn = QToolButton(panel)
+            note_btn.setIcon(QIcon(_icon_path("note")))
+            note_btn.setIconSize(QSize(12, 12))
+            note_btn.setToolTip("笔记")
+            note_btn.setStyleSheet("QToolButton { border: none; padding: 0px; background: transparent; }")
+            merged = "\n\n".join([n for n in notes if n])
+            note_btn.clicked.connect(lambda _=False, text=merged, btn=note_btn: self._show_note_popup(btn, text))
+            row.addWidget(note_btn)
+
+        panel.adjustSize()
+        x = max(2, rect.x() - panel.width() - 4)
+        y = max(0, rect.y())
+        panel.move(x, y)
+        panel.show()
+        self._annotation_markers.append(panel)
+
+    def _show_note_popup(self, anchor: QWidget, text: str) -> None:
+        if self._note_preview_popup is None:
+            return
+        global_pos = anchor.mapToGlobal(QPoint(0, 0))
+        self._note_preview_popup.show_note(global_pos, text)
+
+    def _apply_extra_selections(self) -> None:
+        self._text.setExtraSelections(self._annotation_extras + self._search_extras)
 
     def _jump_to_annotation(self, kind: str, idx: int) -> None:
         source = {
@@ -1103,7 +1589,11 @@ class ReaderView(QWidget):
     def _toggle_search(self) -> None:
         if self._search_panel.isVisible():
             self._search_panel.hide()
-            self._text.setExtraSelections([])
+            self._search_matches = []
+            self._search_idx = -1
+            self._search_extras = []
+            self._search_panel.set_counter(0, 0)
+            self._apply_extra_selections()
         else:
             self._search_panel.show()
             self._search_panel.raise_()
@@ -1114,7 +1604,8 @@ class ReaderView(QWidget):
     def _reposition_search_panel(self) -> None:
         if not hasattr(self, '_search_panel'): return
         w = self.width()
-        self._search_panel.setGeometry(w - 340 - 280, 50, 320, 500)
+        x = w - self._search_panel.width() - 24
+        self._search_panel.setGeometry(max(16, x), 50, 320, 500)
 
     def _perform_search(self, term: str) -> None:
         if not term: return
@@ -1152,11 +1643,38 @@ class ReaderView(QWidget):
             extras.append(extra)
             
             if len(matches) > 100: break
-            
-        self._text.setExtraSelections(extras)
+
+        self._search_matches = matches
+        self._search_extras = extras
+        self._search_idx = 0 if matches else -1
+        self._search_panel.set_counter(1 if matches else 0, len(matches))
+        self._apply_extra_selections()
         self._search_panel.set_results(matches)
+        if matches:
+            self._goto_match(matches[0][0], matches[0][1])
+
+    def _goto_next_match(self) -> None:
+        if not self._search_matches:
+            return
+        self._search_idx = (self._search_idx + 1) % len(self._search_matches)
+        start, end, _ = self._search_matches[self._search_idx]
+        self._search_panel.set_counter(self._search_idx + 1, len(self._search_matches))
+        self._goto_match(start, end)
+
+    def _goto_prev_match(self) -> None:
+        if not self._search_matches:
+            return
+        self._search_idx = (self._search_idx - 1 + len(self._search_matches)) % len(self._search_matches)
+        start, end, _ = self._search_matches[self._search_idx]
+        self._search_panel.set_counter(self._search_idx + 1, len(self._search_matches))
+        self._goto_match(start, end)
 
     def _goto_match(self, start: int, end: int) -> None:
+        for idx, (s, e, _) in enumerate(self._search_matches):
+            if s == start and e == end:
+                self._search_idx = idx
+                self._search_panel.set_counter(idx + 1, len(self._search_matches))
+                break
         cursor = self._text.textCursor()
         cursor.setPosition(start)
         cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)

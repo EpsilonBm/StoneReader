@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -27,6 +27,38 @@ from ..utils.screen import detect_ui_scale
 from .bookshelf_view import BookshelfView
 from .reader_view import ReaderView
 from .sidebar import Sidebar
+
+
+class ToastMessage(QLabel):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("ToastMessage")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet(
+            "QLabel#ToastMessage {"
+            "background: rgba(19, 29, 48, 0.92);"
+            "color: #f8fbff;"
+            "border: 1px solid rgba(255,255,255,0.16);"
+            "border-radius: 8px;"
+            "padding: 8px 14px;"
+            "font: 600 13px 'Microsoft YaHei UI';"
+            "}"
+        )
+        self.hide()
+
+    def show_message(self, text: str, duration_ms: int = 1800) -> None:
+        self.setText(text)
+        self.adjustSize()
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        margin = 18
+        x = max(margin, parent.width() - self.width() - margin)
+        y = margin
+        self.move(x, y)
+        self.show()
+        self.raise_()
+        QTimer.singleShot(duration_ms, self.hide)
 
 
 class MainWindow(QMainWindow):
@@ -72,6 +104,7 @@ class MainWindow(QMainWindow):
 
         root.addWidget(self._stack)
         self.setCentralWidget(shell)
+        self._toast = ToastMessage(shell)
 
     def _build_shelf_page(self) -> QWidget:
         page = QWidget()
@@ -83,6 +116,7 @@ class MainWindow(QMainWindow):
         self._bookshelf.addRequested.connect(self._import_books)
         self._bookshelf.openRequested.connect(self._open_book)
         self._bookshelf.manageRequested.connect(self._show_book_manage_menu)
+        self._bookshelf.actionRequested.connect(self._handle_book_action)
         root.addLayout(self._build_toolbar())
 
         split = QSplitter()
@@ -156,7 +190,7 @@ class MainWindow(QMainWindow):
             sort_by=sort_map.get(self._sort_combo.currentIndex(), "title"),
             selected_tag=self._selected_tag,
         )
-        self._bookshelf.populate(books)
+        self._bookshelf.populate(books, show_add=self._scope == "shelf")
 
     def _toggle_view_mode(self) -> None:
         self._bookshelf.toggle_mode()
@@ -211,6 +245,8 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         add_tag = menu.addAction("添加标签")
         mark_read = menu.addAction("标记为已读" if not book.is_read else "取消已读")
+        mark_fav = menu.addAction("标记最爱" if not book.is_favorite else "取消最爱")
+        remove = menu.addAction("从书架删除")
         chosen = menu.exec(global_pos)
         if chosen is add_tag:
             text, ok = QInputDialog.getText(self, "添加标签", "输入自定义标签:")
@@ -220,7 +256,44 @@ class MainWindow(QMainWindow):
                 self._reload_books()
         elif chosen is mark_read:
             self._library.set_read_status(file_path, not book.is_read)
+            self._show_toast("已标记为已读" if not book.is_read else "已取消已读")
             self._reload_books()
+        elif chosen is mark_fav:
+            self._library.set_favorite_status(file_path, not book.is_favorite)
+            self._show_toast("已添加到最爱" if not book.is_favorite else "已取消最爱")
+            self._reload_books()
+        elif chosen is remove:
+            self._library.remove_book(file_path)
+            self._sidebar.set_formats(self._library.all_formats())
+            self._sidebar.set_tags(self._library.all_tags())
+            self._reload_books()
+
+    def _handle_book_action(self, file_path: str, action: str) -> None:
+        book = self._library.get_by_path(file_path)
+        if book is None:
+            return
+
+        if action == "tag":
+            text, ok = QInputDialog.getText(self, "添加标签", "输入自定义标签:")
+            if ok and text.strip():
+                self._library.add_custom_tag(file_path, text.strip())
+                self._sidebar.set_tags(self._library.all_tags())
+        elif action == "read":
+            self._library.set_read_status(file_path, not book.is_read)
+            self._show_toast("已标记为已读" if not book.is_read else "已取消已读")
+        elif action == "favorite":
+            self._library.set_favorite_status(file_path, not book.is_favorite)
+            self._show_toast("已添加到最爱" if not book.is_favorite else "已取消最爱")
+        elif action == "delete":
+            self._library.remove_book(file_path)
+            self._sidebar.set_formats(self._library.all_formats())
+            self._sidebar.set_tags(self._library.all_tags())
+
+        self._reload_books()
+
+    def _show_toast(self, text: str) -> None:
+        if hasattr(self, "_toast"):
+            self._toast.show_message(text)
 
     def _apply_style(self) -> None:
         self._sync_view_mode_button()

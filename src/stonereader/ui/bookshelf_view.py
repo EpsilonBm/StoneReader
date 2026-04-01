@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QResizeEvent, QPixmap
+from pathlib import Path
+
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QResizeEvent, QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -14,6 +16,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -28,11 +31,13 @@ class BookshelfView(QWidget):
     addRequested = pyqtSignal()
     openRequested = pyqtSignal(str)
     manageRequested = pyqtSignal(str, object)
+    actionRequested = pyqtSignal(str, str)
 
     def __init__(self, ui_scale: UiScale) -> None:
         super().__init__()
         self._scale = ui_scale
         self._books: list[Book] = []
+        self._show_add = True
         self._stack = QStackedWidget()
 
         self._grid_container = QWidget()
@@ -72,10 +77,16 @@ class BookshelfView(QWidget):
             return
         self.set_grid_mode()
 
-    def populate(self, books: list[Book]) -> None:
+    def populate(self, books: list[Book], show_add: bool = True) -> None:
         self._books = list(books)
+        self._show_add = show_add
         self._populate_grid(self._books)
         self._populate_list(self._books)
+
+    @staticmethod
+    def _icon_path(name: str) -> str:
+        root = Path(__file__).resolve().parents[3]
+        return str(root / "source" / "icon" / f"{name}.svg")
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -100,9 +111,10 @@ class BookshelfView(QWidget):
             row, col = divmod(idx, columns)
             self._grid_layout.addWidget(self._build_book_card(book, card_width, card_height, cover_height), row, col)
 
-        add_row, add_col = divmod(len(books), columns)
-        self._grid_layout.addWidget(self._build_add_card(card_width, card_height), add_row, add_col)
-        self._grid_layout.setRowStretch(add_row + 1, 1)
+        if self._show_add:
+            add_row, add_col = divmod(len(books), columns)
+            self._grid_layout.addWidget(self._build_add_card(card_width, card_height), add_row, add_col)
+            self._grid_layout.setRowStretch(add_row + 1, 1)
 
     def _build_book_card(self, book: Book, card_w: int, card_h: int, cover_h: int) -> QWidget:
         card = _ClickableFrame() if book.file_path else QFrame()
@@ -135,9 +147,42 @@ class BookshelfView(QWidget):
         author = QLabel(book.author)
         author.setStyleSheet("color: #52616b;")
 
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(4)
+
+        for icon_name, tip, action_key in (
+            ("tag", "添加标签", "tag"),
+            ("read", "标记已读", "read"),
+            ("favorite", "标记最爱", "favorite"),
+            ("delete", "从书架删除", "delete"),
+        ):
+            btn = QToolButton(card)
+            state_on = (action_key == "read" and book.is_read) or (action_key == "favorite" and book.is_favorite)
+            resolved_icon = f"{icon_name}-filled" if state_on and action_key in {"read", "favorite"} else icon_name
+            btn.setIcon(QIcon(self._icon_path(resolved_icon)))
+            btn.setIconSize(QSize(14, 14))
+            btn.setToolTip(tip)
+            btn.setAutoRaise(True)
+            if state_on:
+                btn.setStyleSheet(
+                    "QToolButton { border: none; background: #e6f0ff; border-radius: 4px; padding: 4px; }"
+                    "QToolButton:hover { background: #d5e6ff; }"
+                )
+            else:
+                btn.setStyleSheet(
+                    "QToolButton { border: none; background: transparent; border-radius: 4px; padding: 4px; }"
+                    "QToolButton:hover { background: #e2e8f0; }"
+                )
+            if book.file_path:
+                btn.clicked.connect(lambda _=False, p=book.file_path, a=action_key: self.actionRequested.emit(p, a))
+            actions.addWidget(btn)
+        actions.addStretch(1)
+
         layout.addWidget(cover)
         layout.addWidget(title)
         layout.addWidget(author)
+        layout.addLayout(actions)
         return card
 
     def _build_add_card(self, card_w: int, card_h: int) -> QWidget:
@@ -195,14 +240,15 @@ class BookshelfView(QWidget):
             self._list.addItem(item)
             self._list.setItemWidget(item, row_widget)
 
-        add_item = QListWidgetItem()
-        add_item.setData(Qt.ItemDataRole.UserRole, "add")
-        add_widget = QLabel("+ 添加书籍")
-        add_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        add_widget.setStyleSheet("padding: 10px; color: #4f6d7a; border: 1px dashed #88a3b9;")
-        add_item.setSizeHint(add_widget.sizeHint())
-        self._list.addItem(add_item)
-        self._list.setItemWidget(add_item, add_widget)
+        if self._show_add:
+            add_item = QListWidgetItem()
+            add_item.setData(Qt.ItemDataRole.UserRole, "add")
+            add_widget = QLabel("+ 添加书籍")
+            add_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            add_widget.setStyleSheet("padding: 10px; color: #4f6d7a; border: 1px dashed #88a3b9;")
+            add_item.setSizeHint(add_widget.sizeHint())
+            self._list.addItem(add_item)
+            self._list.setItemWidget(add_item, add_widget)
 
     def _on_list_item_clicked(self, item: QListWidgetItem) -> None:
         if item.data(Qt.ItemDataRole.UserRole) == "add":
