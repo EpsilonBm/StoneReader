@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -40,6 +43,11 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._reload_books()
         self._apply_style()
+
+    @staticmethod
+    def _icon_path(name: str) -> str:
+        root = Path(__file__).resolve().parents[3]
+        return str(root / "source" / "icon" / f"{name}.svg")
 
     def _build_ui(self) -> None:
         shell = QWidget()
@@ -98,8 +106,15 @@ class MainWindow(QMainWindow):
         self._sort_combo.addItems(["阅读时间", "添加时间", "书名", "作者"])
         self._sort_combo.currentIndexChanged.connect(self._reload_books)
 
-        self._view_mode_btn = QPushButton("切换到列表")
-        self._add_book_btn = QPushButton("添加书籍")
+        self._view_mode_btn = QPushButton("")
+        self._view_mode_btn.setIcon(QIcon(self._icon_path("view-list")))
+        self._view_mode_btn.setToolTip("切换到列表")
+        self._view_mode_btn.setFixedSize(36, 32)
+
+        self._add_book_btn = QPushButton("")
+        self._add_book_btn.setIcon(QIcon(self._icon_path("add")))
+        self._add_book_btn.setToolTip("添加书籍")
+        self._add_book_btn.setFixedSize(36, 32)
 
         self._view_mode_btn.clicked.connect(self._toggle_view_mode)
         self._add_book_btn.clicked.connect(self._import_books)
@@ -138,9 +153,11 @@ class MainWindow(QMainWindow):
 
     def _sync_view_mode_button(self) -> None:
         if self._bookshelf.is_grid_mode():
-            self._view_mode_btn.setText("切换到列表")
+            self._view_mode_btn.setIcon(QIcon(self._icon_path("view-list")))
+            self._view_mode_btn.setToolTip("切换到列表")
             return
-        self._view_mode_btn.setText("切换到网格")
+        self._view_mode_btn.setIcon(QIcon(self._icon_path("view-grid")))
+        self._view_mode_btn.setToolTip("切换到网格")
 
     def _import_books(self) -> None:
         file_paths, _ = QFileDialog.getOpenFileNames(

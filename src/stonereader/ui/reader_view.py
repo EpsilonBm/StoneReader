@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
 from ..models.book import Book
 from ..utils.text_chapters import ChapterItem, parse_txt
 from ..utils.epub_parser import parse_epub
+from ..utils.mobi_parser import parse_mobi
 
 
 @dataclass(slots=True)
@@ -489,21 +490,28 @@ class ReaderView(QWidget):
         top_bar.setContentsMargins(0, 0, 0, 0)
         
         self._toggle_sidebar_btn = QPushButton("☰ 目录")
+        self._toggle_sidebar_btn.setIcon(QIcon(_icon_path("sidebar")))
+        self._toggle_sidebar_btn.setToolTip("目录面板")
+        self._toggle_sidebar_btn.setText("")
         self._toggle_sidebar_btn.setStyleSheet("background: rgba(0,0,0,0.05); color: rgba(0,0,0,0.6); border: none; border-radius: 4px;")
-        self._toggle_sidebar_btn.setFixedSize(80, 36)
+        self._toggle_sidebar_btn.setFixedSize(40, 36)
         self._toggle_sidebar_btn.clicked.connect(self._toggle_sidebar)
 
-        self._back_btn = HoverButton("⬅ 返回")
-        self._back_btn.setFixedSize(70, 36)
+        self._back_btn = HoverButton("")
+        self._back_btn.setIcon(QIcon(_icon_path("back")))
+        self._back_btn.setToolTip("返回书架")
+        self._back_btn.setFixedSize(40, 36)
         self._back_btn.clicked.connect(self.backRequested)
 
         self._header_info = QLabel("未打开书籍")
         self._header_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._header_info.setStyleSheet("color: rgba(0, 0, 0, 0.4); font-size: 13px;")
 
-        self._toggle_settings_btn = QPushButton("⚙ 设置")
+        self._toggle_settings_btn = QPushButton("")
+        self._toggle_settings_btn.setIcon(QIcon(_icon_path("settings")))
+        self._toggle_settings_btn.setToolTip("显示设置")
         self._toggle_settings_btn.setStyleSheet("background: rgba(0,0,0,0.05); color: rgba(0,0,0,0.6); border: none; border-radius: 4px;")
-        self._toggle_settings_btn.setFixedSize(80, 36)
+        self._toggle_settings_btn.setFixedSize(40, 36)
         self._toggle_settings_btn.clicked.connect(self._toggle_settings)
 
         top_bar.addWidget(self._back_btn)
@@ -518,9 +526,12 @@ class ReaderView(QWidget):
         text_layout.setSpacing(0)
         
         # Side prev button
-        self._btn_prev_area = QPushButton("‹")
+        self._btn_prev_area = QPushButton("")
+        self._btn_prev_area.setIcon(QIcon(_icon_path("chevron-left")))
+        self._btn_prev_area.setToolTip("上一章/上一页")
+        self._btn_prev_area.setIconSize(QSize(18, 18))
         self._btn_prev_area.setFixedWidth(40)
-        self._btn_prev_area.setStyleSheet("background: transparent; border: none; font-size: 24px; color: rgba(0,0,0,0.3);")
+        self._btn_prev_area.setStyleSheet("background: transparent; border: none;")
         self._btn_prev_area.clicked.connect(self._go_prev)
         
         self._text = QTextEdit()
@@ -554,9 +565,12 @@ class ReaderView(QWidget):
         self._text.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
         
         # Side next button
-        self._btn_next_area = QPushButton("›")
+        self._btn_next_area = QPushButton("")
+        self._btn_next_area.setIcon(QIcon(_icon_path("chevron-right")))
+        self._btn_next_area.setToolTip("下一章/下一页")
+        self._btn_next_area.setIconSize(QSize(18, 18))
         self._btn_next_area.setFixedWidth(40)
-        self._btn_next_area.setStyleSheet("background: transparent; border: none; font-size: 24px; color: rgba(0,0,0,0.3);")
+        self._btn_next_area.setStyleSheet("background: transparent; border: none;")
         self._btn_next_area.clicked.connect(self._go_next)
 
         text_layout.addWidget(self._btn_prev_area)
@@ -640,6 +654,8 @@ class ReaderView(QWidget):
             self._chapters = parse_txt(content)
         elif ext == ".epub":
             self._chapters = parse_epub(str(path))
+        elif ext in {".mobi", ".azw3"}:
+            self._chapters = parse_mobi(str(path))
         else:
             self._chapters = [ChapterItem("格式不支持", f"当前不支持 {ext} 格式解析。")]
 

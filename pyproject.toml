@@ -9,7 +9,8 @@ description = "A lightweight and extensible reader built with PyQt6"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-  "PyQt6>=6.7.0"
+  "PyQt6>=6.7.0",
+  "mobi>=0.4.1"
 ]
 
 [project.scripts]
