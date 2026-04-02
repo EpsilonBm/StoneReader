@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 import html
+import json
 
 from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QSize, QEvent, QTimer
 from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont, QKeySequence, QShortcut, QIcon, QAction, QPainter
@@ -15,6 +16,7 @@ from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QColorDialog,
     QComboBox,
+    QFileDialog,
     QFontComboBox,
     QFrame,
     QHBoxLayout,
@@ -82,7 +84,7 @@ def _icon_path(name: str) -> str:
 
 class SelectionQuickBar(QFrame):
     bookmarkClicked = pyqtSignal()
-    highlightClicked = pyqtSignal()
+    highlightColorClicked = pyqtSignal(str)
     noteClicked = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -95,7 +97,7 @@ class SelectionQuickBar(QFrame):
 
         row = QHBoxLayout(self)
         row.setContentsMargins(6, 6, 6, 6)
-        row.setSpacing(4)
+        row.setSpacing(6)
 
         self._btn_bm = QToolButton(self)
         self._btn_bm.setIcon(QIcon(_icon_path("bookmark")))
@@ -103,11 +105,18 @@ class SelectionQuickBar(QFrame):
         self._btn_bm.setIconSize(QSize(18, 18))
         self._btn_bm.clicked.connect(self.bookmarkClicked)
 
-        self._btn_hl = QToolButton(self)
-        self._btn_hl.setIcon(QIcon(_icon_path("highlight")))
-        self._btn_hl.setToolTip("添加标记")
-        self._btn_hl.setIconSize(QSize(18, 18))
-        self._btn_hl.clicked.connect(self.highlightClicked)
+        self._hl_colors = ["#ffef88", "#ffd1dc", "#c9f7d7", "#cfe3ff"]
+        self._hl_color_btns: list[QToolButton] = []
+        for color in self._hl_colors:
+            btn = QToolButton(self)
+            btn.setToolTip(f"标记颜色 {color}")
+            btn.setFixedSize(16, 16)
+            btn.setStyleSheet(
+                f"QToolButton {{ border: 1px solid #94a3b8; border-radius: 8px; background: {color}; padding: 0px; }}"
+                "QToolButton:hover { border-color: #334155; }"
+            )
+            btn.clicked.connect(lambda _=False, c=color: self.highlightColorClicked.emit(c))
+            self._hl_color_btns.append(btn)
 
         self._btn_note = QToolButton(self)
         self._btn_note.setIcon(QIcon(_icon_path("note")))
@@ -115,12 +124,15 @@ class SelectionQuickBar(QFrame):
         self._btn_note.setIconSize(QSize(18, 18))
         self._btn_note.clicked.connect(self.noteClicked)
 
-        for btn in (self._btn_bm, self._btn_hl, self._btn_note):
+        for btn in (self._btn_bm, self._btn_note):
             btn.setStyleSheet(
                 "QToolButton { border: none; padding: 4px; border-radius: 6px; }"
                 "QToolButton:hover { background: #e2e8f0; }"
             )
+        row.addWidget(self._btn_bm)
+        for btn in self._hl_color_btns:
             row.addWidget(btn)
+        row.addWidget(self._btn_note)
 
         self.hide()
 
@@ -540,6 +552,7 @@ class ReaderSidebar(QWidget):
     chapterSelected = pyqtSignal(int)
     annotationSelected = pyqtSignal(str, int)
     annotationDeleteRequested = pyqtSignal(str, int)
+    exportRequested = pyqtSignal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -590,6 +603,19 @@ class ReaderSidebar(QWidget):
         self._hl_list.itemClicked.connect(lambda item: self._emit_annotation("highlight", item))
         self._hl_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._hl_list.customContextMenuRequested.connect(lambda pos: self._delete_from_context("highlight", self._hl_list, pos))
+        self._hl_filter_bar = QHBoxLayout()
+        self._hl_filter_bar.setContentsMargins(0, 0, 0, 0)
+        self._hl_filter_bar.setSpacing(6)
+        self._hl_records: list[dict] = []
+        self._hl_filter_value: str = ""
+        self._hl_filter_btns: list[QToolButton] = []
+
+        self._hl_panel = QWidget()
+        hl_layout = QVBoxLayout(self._hl_panel)
+        hl_layout.setContentsMargins(0, 0, 0, 0)
+        hl_layout.setSpacing(4)
+        hl_layout.addLayout(self._hl_filter_bar)
+        hl_layout.addWidget(self._hl_list, 1)
 
         self._note_list = QListWidget()
         self._note_list.itemClicked.connect(lambda item: self._emit_annotation("note", item))
@@ -598,10 +624,17 @@ class ReaderSidebar(QWidget):
 
         self._stack.addWidget(self._toc_list)
         self._stack.addWidget(self._bm_list)
-        self._stack.addWidget(self._hl_list)
+        self._stack.addWidget(self._hl_panel)
         self._stack.addWidget(self._note_list)
         
         layout.addLayout(tabs_layout)
+        self._btn_export = QPushButton("导出注释")
+        self._btn_export.setStyleSheet(
+            "QPushButton { border: none; background: transparent; border-radius: 6px; padding: 6px 8px; color: #334155; }"
+            "QPushButton:hover { background: #e2e8f0; color: #0f172a; }"
+        )
+        self._btn_export.clicked.connect(self.exportRequested)
+        layout.addWidget(self._btn_export)
         layout.addWidget(self._stack)
         self._btn_toc.setChecked(True)
 
@@ -631,8 +664,79 @@ class ReaderSidebar(QWidget):
 
     def populate_annotations(self, bookmarks: list[dict], highlights: list[dict], notes: list[dict]) -> None:
         self._fill_annotation_list(self._bm_list, bookmarks, "bookmark")
-        self._fill_annotation_list(self._hl_list, highlights, "highlight")
+        self._hl_records = list(highlights)
+        self._sync_highlight_filter_options()
+        self._refresh_highlight_list()
         self._fill_annotation_list(self._note_list, notes, "note")
+
+    def _sync_highlight_filter_options(self) -> None:
+        while self._hl_filter_bar.count() > 0:
+            item = self._hl_filter_bar.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        self._hl_filter_btns.clear()
+        colors = sorted({str(rec.get("color", "#ffef88")) for rec in self._hl_records})
+
+        all_btn = QToolButton(self)
+        all_btn.setToolTip("所有标记")
+        all_btn.setCheckable(True)
+        all_btn.setChecked(self._hl_filter_value == "")
+        all_btn.setFixedSize(16, 16)
+        all_btn.setStyleSheet(
+            "QToolButton { border: 1px solid #64748b; border-radius: 8px;"
+            "background: qconicalgradient(cx:0.5, cy:0.5, angle:0, stop:0 #ffef88, stop:0.25 #ffd1dc, stop:0.5 #c9f7d7, stop:0.75 #cfe3ff, stop:1 #ffef88); }"
+            "QToolButton:checked { border: 2px solid #334155; }"
+        )
+        all_btn.clicked.connect(lambda _=False: self._set_highlight_filter(""))
+        self._hl_filter_bar.addWidget(all_btn)
+        self._hl_filter_btns.append(all_btn)
+
+        for color in colors:
+            btn = QToolButton(self)
+            btn.setToolTip(color)
+            btn.setCheckable(True)
+            btn.setChecked(self._hl_filter_value == color)
+            btn.setFixedSize(16, 16)
+            btn.setStyleSheet(
+                f"QToolButton {{ border: 1px solid #64748b; border-radius: 8px; background: {color}; }}"
+                "QToolButton:checked { border: 2px solid #334155; }"
+            )
+            btn.clicked.connect(lambda _=False, c=color: self._set_highlight_filter(c))
+            self._hl_filter_bar.addWidget(btn)
+            self._hl_filter_btns.append(btn)
+        self._hl_filter_bar.addStretch(1)
+
+    def _set_highlight_filter(self, color: str) -> None:
+        self._hl_filter_value = color
+        self._sync_highlight_filter_options()
+        self._refresh_highlight_list()
+
+    def _refresh_highlight_list(self) -> None:
+        selected_color = self._hl_filter_value
+
+        while self._hl_list.count() > 0:
+            item = self._hl_list.takeItem(0)
+            widget = self._hl_list.itemWidget(item)
+            if widget is not None:
+                self._hl_list.removeItemWidget(item)
+                widget.deleteLater()
+            del item
+        self._hl_list.clear()
+
+        for idx, rec in enumerate(self._hl_records):
+            color = str(rec.get("color", "#ffef88"))
+            if selected_color and color != selected_color:
+                continue
+            preview = rec.get("preview", "")
+            chapter = rec.get("chapter_title", "")
+            head = f"{chapter} | {preview}" if chapter else preview
+            item = QListWidgetItem(f"● {head[:120]}")
+            item.setToolTip(head)
+            item.setData(Qt.ItemDataRole.UserRole, idx)
+            item.setForeground(QColor(color))
+            self._hl_list.addItem(item)
 
     def _fill_annotation_list(self, list_widget: QListWidget, records: list[dict], kind: str) -> None:
         # QListWidget with setItemWidget may keep stale widgets if not explicitly detached.
@@ -855,6 +959,7 @@ class ReaderView(QWidget):
         self._sidebar.chapterSelected.connect(self._jump_to_chapter)
         self._sidebar.annotationSelected.connect(self._jump_to_annotation)
         self._sidebar.annotationDeleteRequested.connect(self._delete_annotation)
+        self._sidebar.exportRequested.connect(self._export_annotations)
         self._sidebar.hide()
 
         # 2. Central Reading Area
@@ -1005,7 +1110,7 @@ class ReaderView(QWidget):
 
         self._quick_bar = SelectionQuickBar(self)
         self._quick_bar.bookmarkClicked.connect(self._add_bookmark_from_selection)
-        self._quick_bar.highlightClicked.connect(self._add_highlight_from_selection)
+        self._quick_bar.highlightColorClicked.connect(self._add_highlight_from_selection)
         self._quick_bar.noteClicked.connect(self._add_note_from_selection)
 
         self._inline_note_editor = InlineNoteEditor(self)
@@ -1571,12 +1676,60 @@ class ReaderView(QWidget):
         self._bookmarks.append(rec)
         self._after_annotation_changed()
 
-    def _add_highlight_from_selection(self) -> None:
+    def _add_highlight_from_selection(self, color: str = "#ffef88") -> None:
         rec = self._selection_record()
         if rec is None:
             return
+        rec["color"] = color
         self._highlights.append(rec)
         self._after_annotation_changed()
+
+    def _export_annotations(self) -> None:
+        if self._book is None:
+            return
+        default_name = f"{self._book.title}_annotations.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出注释",
+            default_name,
+            "JSON Files (*.json);;Text Files (*.txt)",
+        )
+        if not path:
+            return
+
+        target = Path(path)
+        payload = {
+            "book": {
+                "title": self._book.title,
+                "author": self._book.author,
+                "file_path": self._book.file_path,
+            },
+            "bookmarks": self._bookmarks,
+            "highlights": self._highlights,
+            "notes": self._notes,
+        }
+        if target.suffix.lower() == ".txt":
+            lines: list[str] = [f"书籍: {self._book.title}", f"作者: {self._book.author}", ""]
+            lines.append("[书签]")
+            for idx, b in enumerate(self._bookmarks, start=1):
+                lines.append(f"{idx}. {b.get('chapter_title','')} @ {b.get('local_start',0)} | {b.get('preview','')}")
+            lines.append("")
+            lines.append("[标记]")
+            for idx, h in enumerate(self._highlights, start=1):
+                lines.append(
+                    f"{idx}. {h.get('chapter_title','')} @ {h.get('local_start',0)} | 颜色: {h.get('color','#ffef88')} | {h.get('preview','')}"
+                )
+            lines.append("")
+            lines.append("[笔记]")
+            for idx, n in enumerate(self._notes, start=1):
+                lines.append(f"{idx}. {n.get('chapter_title','')} @ {n.get('local_start',0)}")
+                lines.append(f"   选中文本: {n.get('preview','')}")
+                lines.append(f"   笔记: {n.get('note','')}")
+            target.write_text("\n".join(lines), encoding="utf-8")
+        else:
+            target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        QMessageBox.information(self, "导出完成", f"已导出到:\n{target}")
 
     def _add_note_from_selection(self) -> None:
         rec = self._selection_record()
@@ -1637,8 +1790,6 @@ class ReaderView(QWidget):
             return
 
         mode = self._visual_settings.reading_mode
-        highlight_fmt = QTextCharFormat()
-        highlight_fmt.setBackground(QColor("#ffef88"))
         note_fmt = QTextCharFormat()
         note_fmt.setBackground(QColor("#ffe08a"))
 
@@ -1646,6 +1797,9 @@ class ReaderView(QWidget):
             pos = self._annotation_position_in_current_text(rec, mode)
             if pos is None:
                 continue
+            color = str(rec.get("color", "#ffef88"))
+            highlight_fmt = QTextCharFormat()
+            highlight_fmt.setBackground(QColor(color))
             start, length = pos
             doc_len = self._text.document().characterCount()
             if start < 0 or start >= doc_len:
@@ -1774,17 +1928,17 @@ class ReaderView(QWidget):
         chapter_idx = max(0, min(chapter_idx, len(self._chapters) - 1))
         self._jump_to_chapter(chapter_idx)
 
-        selected_text = rec.get("selected_text", "")
-        if not selected_text:
+        pos_info = self._annotation_position_in_current_text(rec, self._visual_settings.reading_mode)
+        if pos_info is None:
             return
-
-        plain = self._text.toPlainText()
-        pos = plain.find(selected_text)
-        if pos < 0:
+        pos, length = pos_info
+        doc_len = self._text.document().characterCount()
+        if pos < 0 or pos >= doc_len:
             return
+        end_pos = min(pos + max(length, 1), max(pos + 1, doc_len - 1))
         cursor = self._text.textCursor()
         cursor.setPosition(pos)
-        cursor.setPosition(pos + len(selected_text), QTextCursor.MoveMode.KeepAnchor)
+        cursor.setPosition(end_pos, QTextCursor.MoveMode.KeepAnchor)
         self._text.setTextCursor(cursor)
         self._text.ensureCursorVisible()
 
