@@ -5,6 +5,9 @@ import urllib.parse
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
 import re
+import base64
+import mimetypes
+from pathlib import PurePosixPath
 
 from .text_chapters import ChapterItem
 
@@ -38,24 +41,55 @@ def _collect_epub_footnotes(soup: BeautifulSoup) -> dict[str, str]:
         num = m.group(1)
         token = f"[{num}]"
         target_id = href[1:]
-        note_text = _extract_node_text(id_nodes.get(target_id))
+        target_node = id_nodes.get(target_id)
+        note_text = _extract_node_text(target_node)
         if not note_text:
             continue
+        try:
+            if target_node is not None:
+                now_text = _extract_node_text(target_node)
+                if token not in now_text and f"{num} " not in now_text:
+                    target_node.insert(0, f"{token} ")
+        except Exception:
+            pass
         footnotes[token] = note_text
         footnotes[num] = note_text
 
     return footnotes
 
 
-def _collect_epub_media_markers(soup: BeautifulSoup) -> list[dict]:
+def _normalize_zip_path(path: str) -> str:
+    return str(PurePosixPath(path)).lstrip("./")
+
+
+def _resolve_relative_zip_path(chapter_path: str, rel_path: str) -> str:
+    chapter_dir = PurePosixPath(chapter_path).parent
+    return _normalize_zip_path(str((chapter_dir / rel_path).as_posix()))
+
+
+def _collect_epub_media_markers(soup: BeautifulSoup, archive: zipfile.ZipFile, chapter_path: str) -> list[dict]:
     media: list[dict] = []
     for img in soup.find_all("img"):
         src = str(img.get("src", "")).strip()
         alt = str(img.get("alt", "")).strip()
         if not src and not alt:
             continue
-        media.append({"type": "image", "src": src, "alt": alt})
-        marker = f"[插图: {alt}]" if alt else f"[插图: {src}]"
+
+        token = f"[图{len(media) + 1}]"
+        entry = {"type": "image", "token": token, "src": src, "alt": alt}
+
+        try:
+            rel = urllib.parse.unquote(src).split("#")[0]
+            if rel and not rel.lower().startswith(("http://", "https://", "data:")):
+                resolved = _resolve_relative_zip_path(chapter_path, rel)
+                raw = archive.read(resolved)
+                mime = mimetypes.guess_type(resolved)[0] or "image/jpeg"
+                entry["data_url"] = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+        except Exception:
+            pass
+
+        media.append(entry)
+        marker = f"{token} {alt}" if alt else token
         img.replace_with("\n" + marker + "\n")
     return media
 
@@ -164,7 +198,7 @@ def parse_epub(file_path: str) -> list[ChapterItem]:
                     script.extract()
 
                 footnotes = _collect_epub_footnotes(soup)
-                media = _collect_epub_media_markers(soup)
+                media = _collect_epub_media_markers(soup, archive, full_path)
                     
                 text_content = soup.get_text(separator='\n', strip=True)
                 if not text_content.strip(): 
@@ -180,10 +214,6 @@ def parse_epub(file_path: str) -> list[ChapterItem]:
                 
                 import re
                 chapter_text = re.sub(r'\n{3,}', '\n\n', "\n".join(cleaned))
-                if footnotes:
-                    chapter_text += "\n\n【注释】\n"
-                    for key in sorted([k for k in footnotes.keys() if k.startswith("[")], key=lambda s: int(s.strip("[]"))):
-                        chapter_text += f"{key} {footnotes[key]}\n"
                 chapters.append(ChapterItem(title, chapter_text, footnotes=footnotes, media=media))
                 
     except Exception as exc:

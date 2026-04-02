@@ -9,9 +9,10 @@ from pathlib import Path
 import re
 import html
 import json
+import base64
 
 from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QSize, QEvent, QTimer
-from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont, QKeySequence, QShortcut, QIcon, QAction, QPainter
+from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont, QKeySequence, QShortcut, QIcon, QAction, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QColorDialog,
@@ -318,6 +319,117 @@ class NotePreviewPopup(QFrame):
     def show_note(self, global_pos: QPoint, text: str) -> None:
         self._body.setText(text or "(空笔记)")
         self.resize(320, 180)
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        local = parent.mapFromGlobal(global_pos)
+        x = min(max(8, local.x() + 10), max(8, parent.width() - self.width() - 8))
+        y = min(max(8, local.y() + 10), max(8, parent.height() - self.height() - 8))
+        self.move(x, y)
+        self.show()
+        self.raise_()
+
+
+class FootnotePopup(QFrame):
+    jumpRequested = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("FootnotePopup")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(
+            "QFrame#FootnotePopup { background: #fbfdff; border: 1px solid #b7c8de; border-radius: 10px; }"
+            "QLabel#FootnoteTitle { color: #1e3a5f; font-weight: bold; }"
+            "QLabel#FootnoteBody { color: #0f172a; background: #f8fbff; border: 1px solid #d7e3f1; border-radius: 8px; padding: 8px; }"
+            "QPushButton { border: none; border-radius: 6px; padding: 6px 10px; background: #e5eefb; color: #0f172a; }"
+            "QPushButton:hover { background: #d8e7fb; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        self._title = QLabel("注释")
+        self._title.setObjectName("FootnoteTitle")
+        self._body = QLabel("")
+        self._body.setObjectName("FootnoteBody")
+        self._body.setWordWrap(True)
+        self._body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self._jump = QPushButton("跳转到注释位置")
+        self._close = QPushButton("关闭")
+        self._jump.clicked.connect(self.jumpRequested)
+        self._close.clicked.connect(self.hide)
+        actions.addWidget(self._jump)
+        actions.addWidget(self._close)
+
+        layout.addWidget(self._title)
+        layout.addWidget(self._body)
+        layout.addLayout(actions)
+        self.hide()
+
+    def show_footnote(self, global_pos: QPoint, token: str, text: str, can_jump: bool) -> None:
+        self._title.setText(f"注释 {token}")
+        self._body.setText(text or "(空注释)")
+        self._jump.setEnabled(can_jump)
+        self.resize(360, 210)
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        local = parent.mapFromGlobal(global_pos)
+        x = min(max(8, local.x() + 10), max(8, parent.width() - self.width() - 8))
+        y = min(max(8, local.y() + 10), max(8, parent.height() - self.height() - 8))
+        self.move(x, y)
+        self.show()
+        self.raise_()
+
+
+class MediaPreviewPopup(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("MediaPreviewPopup")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(
+            "QFrame#MediaPreviewPopup { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; }"
+            "QLabel#MediaTitle { color: #1f2937; font-weight: bold; }"
+            "QLabel#MediaImage { background: #f8fafc; border: 1px solid #dbe3ef; border-radius: 8px; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        self._title = QLabel("插图")
+        self._title.setObjectName("MediaTitle")
+        self._image = QLabel("(暂无图片)")
+        self._image.setObjectName("MediaImage")
+        self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image.setMinimumSize(280, 160)
+        self._close = QPushButton("关闭")
+        self._close.clicked.connect(self.hide)
+        layout.addWidget(self._title)
+        layout.addWidget(self._image)
+        layout.addWidget(self._close)
+        self.hide()
+
+    def show_media(self, global_pos: QPoint, token: str, alt: str, data_url: str) -> None:
+        self._title.setText(f"插图 {token}" if token else "插图")
+        pix = QPixmap()
+        ok = False
+        if data_url.startswith("data:") and ";base64," in data_url:
+            payload = data_url.split(";base64,", 1)[1]
+            try:
+                raw = base64.b64decode(payload)
+                ok = pix.loadFromData(raw)
+            except Exception:
+                ok = False
+        if ok:
+            self._image.setPixmap(pix.scaled(520, 360, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self._image.setText("")
+        else:
+            self._image.setPixmap(QPixmap())
+            self._image.setText(alt or "(该插图无可用图像数据)")
+
+        self.resize(560, 430)
         parent = self.parentWidget()
         if parent is None:
             return
@@ -948,6 +1060,10 @@ class ReaderView(QWidget):
         self._middle_scroll_timer.setInterval(16)
         self._middle_scroll_timer.timeout.connect(self._tick_middle_scroll)
         self._note_preview_popup: NotePreviewPopup | None = None
+        self._footnote_popup: FootnotePopup | None = None
+        self._media_popup: MediaPreviewPopup | None = None
+        self._footnote_jump_target: dict | None = None
+        self._footnote_return_positions: dict[tuple[int, str], int] = {}
 
         # Layout Setup
         self.main_layout = QHBoxLayout(self)
@@ -1117,6 +1233,9 @@ class ReaderView(QWidget):
         self._inline_note_editor.submitRequested.connect(self._submit_inline_note)
         self._inline_note_editor.canceled.connect(self._cancel_inline_note)
         self._note_preview_popup = NotePreviewPopup(self)
+        self._footnote_popup = FootnotePopup(self)
+        self._footnote_popup.jumpRequested.connect(self._jump_to_footnote_content)
+        self._media_popup = MediaPreviewPopup(self)
 
         self.main_layout.addWidget(self._sidebar, 0)
         self.main_layout.addWidget(self.reading_area, 1)
@@ -1148,6 +1267,10 @@ class ReaderView(QWidget):
         self._reposition_search_panel()
         if self._note_preview_popup and self._note_preview_popup.isVisible():
             self._note_preview_popup.hide()
+        if self._footnote_popup and self._footnote_popup.isVisible():
+            self._footnote_popup.hide()
+        if self._media_popup and self._media_popup.isVisible():
+            self._media_popup.hide()
 
     def eventFilter(self, obj, event):
         if obj is self._text.viewport():
@@ -1163,6 +1286,8 @@ class ReaderView(QWidget):
                 return True
             if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 if self._try_open_builtin_footnote(event.position().toPoint()):
+                    return True
+                if self._try_open_media_marker(event.position().toPoint()):
                     return True
             if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.MiddleButton:
                 self._middle_dragging = False
@@ -1205,19 +1330,85 @@ class ReaderView(QWidget):
         if not note_text:
             return False
 
-        jump_token = f"\n{token} "
-        jump_pos = plain.find(jump_token, cp)
-        if jump_pos < 0:
-            jump_pos = plain.find(jump_token)
-        if jump_pos >= 0:
+        jump_pos = self._find_footnote_anchor_pos(plain, token, num)
+        key = (chapter_idx, token)
+        if jump_pos >= 0 and abs(cp - jump_pos) <= 4 and key in self._footnote_return_positions:
+            back = self._footnote_return_positions.pop(key)
             c = self._text.textCursor()
-            c.setPosition(jump_pos)
+            c.setPosition(max(0, min(back, max(0, self._text.document().characterCount() - 1))))
             self._text.setTextCursor(c)
             self._text.ensureCursorVisible()
+            return True
 
-        if self._note_preview_popup is not None:
+        self._footnote_jump_target = {
+            "chapter_idx": chapter_idx,
+            "token": token,
+            "jump_pos": jump_pos,
+            "return_pos": cp,
+        }
+
+        if self._footnote_popup is not None:
             global_pos = self._text.viewport().mapToGlobal(pos)
-            self._note_preview_popup.show_note(global_pos, note_text)
+            self._footnote_popup.show_footnote(global_pos, token, note_text, jump_pos >= 0)
+        return True
+
+    def _find_footnote_anchor_pos(self, plain: str, token: str, num: str) -> int:
+        for pat in (rf"\n[　 \t]*{re.escape(token)}\s", rf"\n[　 \t]*{re.escape(num)}\s"):
+            m = re.search(pat, plain)
+            if m:
+                return m.start() + 1
+        return -1
+
+    def _jump_to_footnote_content(self) -> None:
+        target = self._footnote_jump_target
+        if not target:
+            return
+        jump_pos = int(target.get("jump_pos", -1))
+        if jump_pos < 0:
+            return
+        chapter_idx = int(target.get("chapter_idx", self._current_chapter_idx))
+        token = str(target.get("token", ""))
+        return_pos = int(target.get("return_pos", 0))
+
+        self._footnote_return_positions[(chapter_idx, token)] = return_pos
+        c = self._text.textCursor()
+        c.setPosition(max(0, min(jump_pos, max(0, self._text.document().characterCount() - 1))))
+        self._text.setTextCursor(c)
+        self._text.ensureCursorVisible()
+        if self._footnote_popup is not None:
+            self._footnote_popup.hide()
+
+    def _try_open_media_marker(self, pos: QPoint) -> bool:
+        cursor = self._text.cursorForPosition(pos)
+        plain = self._text.toPlainText()
+        if not plain:
+            return False
+        cp = cursor.position()
+        left = max(0, cp - 16)
+        right = min(len(plain), cp + 16)
+        snippet = plain[left:right]
+        token = ""
+        for m in re.finditer(r"\[图(\d{1,4})\]", snippet):
+            gs = left + m.start()
+            ge = left + m.end()
+            if gs <= cp <= ge:
+                token = m.group(0)
+                break
+        if not token:
+            return False
+
+        chapter_idx = self._current_chapter_idx
+        if self._visual_settings.reading_mode == "full_scroll":
+            chapter_idx = self._chapter_index_from_doc_pos(cp)
+        chapter_idx = max(0, min(chapter_idx, len(self._chapters) - 1))
+        ch = self._chapters[chapter_idx]
+        entry = next((m for m in ch.media if str(m.get("token", "")) == token), None)
+        if not entry:
+            return False
+        if self._media_popup is None:
+            return False
+        global_pos = self._text.viewport().mapToGlobal(pos)
+        self._media_popup.show_media(global_pos, token, str(entry.get("alt", "")), str(entry.get("data_url", "")))
         return True
 
     def _chapter_index_from_doc_pos(self, doc_pos: int) -> int:
