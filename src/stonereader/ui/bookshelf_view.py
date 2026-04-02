@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QResizeEvent, QPixmap, QIcon
+from PyQt6.QtCore import QSize, Qt, pyqtSignal, QTimer
+from PyQt6.QtGui import QColor, QFont, QResizeEvent, QPixmap, QIcon, QShowEvent
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -82,6 +82,11 @@ class BookshelfView(QWidget):
         self._show_add = show_add
         self._populate_grid(self._books)
         self._populate_list(self._books)
+        QTimer.singleShot(0, self._refresh_grid_layout)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._refresh_grid_layout)
 
     @staticmethod
     def _icon_path(name: str) -> str:
@@ -93,6 +98,10 @@ class BookshelfView(QWidget):
         if self._books:
             self._populate_grid(self._books)
 
+    def _refresh_grid_layout(self) -> None:
+        if self._books and self.is_grid_mode():
+            self._populate_grid(self._books)
+
     def _populate_grid(self, books: list[Book]) -> None:
         while self._grid_layout.count():
             item = self._grid_layout.takeAt(0)
@@ -100,8 +109,12 @@ class BookshelfView(QWidget):
             if widget is not None:
                 widget.deleteLater()
 
-        viewport_width = max(self._grid_scroll.viewport().width(), self._scale.card_w + 40)
-        columns = max(1, viewport_width // (self._scale.card_w + self._scale.spacing + 8))
+        viewport_width = self._grid_scroll.viewport().width()
+        if viewport_width < 200:
+            viewport_width = max(self._grid_scroll.width() - 24, self.width() - 280, self._scale.card_w + 40)
+
+        min_card_w = max(160, int(self._scale.card_w * 0.72))
+        columns = max(1, (viewport_width + self._scale.spacing) // (min_card_w + self._scale.spacing))
         usable_width = max(140, viewport_width - 24 - (columns - 1) * self._scale.spacing)
         card_width = max(140, min(int(usable_width / columns), self._scale.card_w + 40))
         card_height = int(card_width * 1.45)

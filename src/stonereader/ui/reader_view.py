@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import html
 
-from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QSize, QEvent
+from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QSize, QEvent, QTimer
 from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont, QKeySequence, QShortcut, QIcon, QAction, QPainter
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QStyle,
     QStyleOptionSlider,
     QTextEdit,
+    QToolTip,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -55,6 +56,7 @@ class ReaderVisualSettings:
     reading_mode: str = "chapter_scroll"  # "full_scroll", "chapter_scroll", "paginated"
     shortcut_prev: str = "Left"
     shortcut_next: str = "Right"
+    middle_scroll_speed_cap: int = 36
 
 
 class HoverButton(QPushButton):
@@ -125,10 +127,11 @@ class SelectionQuickBar(QFrame):
 class ChapterProgressSlider(QSlider):
     def __init__(self, orientation: Qt.Orientation, parent: QWidget | None = None) -> None:
         super().__init__(orientation, parent)
-        self._markers: list[float] = []
+        self._markers: list[tuple[float, str]] = []
+        self.setMouseTracking(True)
 
-    def set_markers(self, markers: list[float]) -> None:
-        self._markers = [m for m in markers if 0.0 < m < 1.0]
+    def set_markers(self, markers: list[tuple[float, str]]) -> None:
+        self._markers = [(m, t) for m, t in markers if 0.0 < m < 1.0]
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -153,9 +156,46 @@ class ChapterProgressSlider(QSlider):
         painter.setBrush(QColor(60, 64, 67, 140))
 
         y = groove.center().y()
-        for ratio in self._markers:
+        for ratio, _ in self._markers:
             x = groove.left() + int(ratio * groove.width())
             painter.drawEllipse(QPoint(x, y), 2, 2)
+
+    def mouseMoveEvent(self, event) -> None:
+        super().mouseMoveEvent(event)
+        title = self._marker_title_at(event.position().x())
+        if title:
+            QToolTip.showText(event.globalPosition().toPoint(), title, self)
+        else:
+            QToolTip.hideText()
+
+    def leaveEvent(self, event) -> None:
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+    def _marker_title_at(self, x: float) -> str | None:
+        if not self._markers:
+            return None
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        groove = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider,
+            option,
+            QStyle.SubControl.SC_SliderGroove,
+            self,
+        )
+        if groove.width() <= 0:
+            return None
+        nearest_title = None
+        nearest_dist = 9999.0
+        for ratio, title in self._markers:
+            marker_x = groove.left() + ratio * groove.width()
+            dist = abs(marker_x - x)
+            if dist < nearest_dist:
+                nearest_dist = dist
+                nearest_title = title
+        if nearest_dist <= 6.0:
+            return nearest_title
+        return None
 
 
 class InlineNoteEditor(QFrame):
@@ -297,6 +337,7 @@ class ReaderSettingsPanel(QWidget):
             reading_mode=settings.reading_mode,
             shortcut_prev=settings.shortcut_prev,
             shortcut_next=settings.shortcut_next,
+            middle_scroll_speed_cap=settings.middle_scroll_speed_cap,
         )
 
         root = QVBoxLayout(self)
@@ -362,6 +403,14 @@ class ReaderSettingsPanel(QWidget):
         
         self._shortcut_next = QKeySequenceEdit(QKeySequence(settings.shortcut_next))
         self._shortcut_next.keySequenceChanged.connect(self._on_changed)
+
+        self._middle_speed_cap = QSpinBox()
+        self._middle_speed_cap.setRange(8, 180)
+        self._middle_speed_cap.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.PlusMinus)
+        self._middle_speed_cap.setMinimumHeight(32)
+        self._middle_speed_cap.setSuffix(" px/帧")
+        self._middle_speed_cap.setValue(settings.middle_scroll_speed_cap)
+        self._middle_speed_cap.valueChanged.connect(self._on_changed)
         
         root.addLayout(self._row("阅读模式", self._reading_mode))
         root.addLayout(self._row("英文字体", self._font_family_en))
@@ -373,6 +422,7 @@ class ReaderSettingsPanel(QWidget):
         root.addLayout(self._row("背景颜色", self._bg_color_btn))
         root.addLayout(self._row("上章快捷键", self._shortcut_prev))
         root.addLayout(self._row("下章快捷键", self._shortcut_next))
+        root.addLayout(self._row("中键滚动上限", self._middle_speed_cap))
         root.addStretch(1)
 
         self.setStyleSheet("""
@@ -417,6 +467,7 @@ class ReaderSettingsPanel(QWidget):
         self._settings.line_width_percent = self._line_width.value()
         self._settings.shortcut_prev = self._shortcut_prev.keySequence().toString()
         self._settings.shortcut_next = self._shortcut_next.keySequence().toString()
+        self._settings.middle_scroll_speed_cap = self._middle_speed_cap.value()
         
         mode_idx = self._reading_mode.currentIndex()
         if mode_idx == 0:
@@ -733,7 +784,10 @@ class ReaderView(QWidget):
         self._pending_note_record: dict | None = None
         self._middle_dragging = False
         self._middle_drag_y = 0
-        self._middle_drag_scroll = 0
+        self._middle_drag_current_y = 0
+        self._middle_scroll_timer = QTimer(self)
+        self._middle_scroll_timer.setInterval(16)
+        self._middle_scroll_timer.timeout.connect(self._tick_middle_scroll)
         self._note_preview_popup: NotePreviewPopup | None = None
 
         # Layout Setup
@@ -938,19 +992,33 @@ class ReaderView(QWidget):
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.MiddleButton:
                 self._middle_dragging = True
                 self._middle_drag_y = event.globalPosition().toPoint().y()
-                self._middle_drag_scroll = self._text.verticalScrollBar().value()
+                self._middle_drag_current_y = self._middle_drag_y
+                self._middle_scroll_timer.start()
                 self._text.viewport().setCursor(Qt.CursorShape.SizeVerCursor)
                 return True
             if event.type() == QEvent.Type.MouseMove and self._middle_dragging:
-                delta = event.globalPosition().toPoint().y() - self._middle_drag_y
-                bar = self._text.verticalScrollBar()
-                bar.setValue(self._middle_drag_scroll - int(delta * 2.2))
+                self._middle_drag_current_y = event.globalPosition().toPoint().y()
                 return True
             if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.MiddleButton:
                 self._middle_dragging = False
+                self._middle_scroll_timer.stop()
                 self._text.viewport().unsetCursor()
                 return True
         return super().eventFilter(obj, event)
+
+    def _tick_middle_scroll(self) -> None:
+        if not self._middle_dragging:
+            return
+        delta = self._middle_drag_current_y - self._middle_drag_y
+        if abs(delta) < 1:
+            return
+        speed = int(delta * 0.12)
+        if speed == 0:
+            speed = 1 if delta > 0 else -1
+        cap = max(8, int(self._visual_settings.middle_scroll_speed_cap))
+        speed = max(-cap, min(cap, speed))
+        bar = self._text.verticalScrollBar()
+        bar.setValue(bar.value() + speed)
 
     def load_book(self, book: Book) -> None:
         self._book = book
@@ -1016,7 +1084,7 @@ class ReaderView(QWidget):
             self._progress_slider.set_markers([])
             return
         mode = self._visual_settings.reading_mode
-        markers: list[float] = []
+        markers: list[tuple[float, str]] = []
         if mode == "full_scroll":
             total = sum(len(ch.text) for ch in self._chapters)
             if total <= 0:
@@ -1025,10 +1093,10 @@ class ReaderView(QWidget):
             acc = 0
             for idx, ch in enumerate(self._chapters[:-1]):
                 acc += len(ch.text)
-                markers.append(acc / total)
+                markers.append((acc / total, self._chapters[idx + 1].title))
         else:
             denom = max(1, len(self._chapters) - 1)
-            markers = [idx / denom for idx in range(1, len(self._chapters) - 1)]
+            markers = [(idx / denom, self._chapters[idx].title) for idx in range(1, len(self._chapters) - 1)]
         self._progress_slider.set_markers(markers)
 
     # ----------------------------------------------------
@@ -1224,11 +1292,11 @@ class ReaderView(QWidget):
 
         self.reading_area.setStyleSheet(f"QWidget {{ background: {settings.background_color}; color: {settings.text_color}; }}")
 
-        font = QFont(settings.font_family_en, settings.font_size)
+        font = QFont(settings.font_family_zh, settings.font_size)
         try:
-            font.setFamilies([settings.font_family_en, settings.font_family_zh])
+            font.setFamilies([settings.font_family_zh, settings.font_family_en])
         except AttributeError:
-            pass # PyQt6 sometimes does not expose setFamilies directly on font easily
+            font.setFamily(settings.font_family_zh)
         self._text.setFont(font)
 
         if hasattr(self, '_sc_prev'):
@@ -1270,10 +1338,15 @@ class ReaderView(QWidget):
         max_w = self.reading_area.width()
         content_w = int(max_w * self._visual_settings.line_width_percent / 100)
         margin = max(0, (max_w - content_w) // 2)
+        zh = self._visual_settings.font_family_zh.replace('"', "")
+        en = self._visual_settings.font_family_en.replace('"', "")
         
         self._text.setStyleSheet(
             f"QTextEdit {{ "
             f"background: transparent; border: none; selection-background-color: #88a3b9; "
+            f"color: {self._visual_settings.text_color}; "
+            f"font-size: {self._visual_settings.font_size}pt; "
+            f"font-family: '{zh}', '{en}'; "
             f"padding-left: {margin}px; padding-right: {margin}px;"
             f"}}"
         )
