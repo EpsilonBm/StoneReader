@@ -57,6 +57,7 @@ class ReaderVisualSettings:
     shortcut_prev: str = "Left"
     shortcut_next: str = "Right"
     middle_scroll_speed_cap: int = 36
+    middle_scroll_gain_percent: int = 12
 
 
 class HoverButton(QPushButton):
@@ -338,6 +339,7 @@ class ReaderSettingsPanel(QWidget):
             shortcut_prev=settings.shortcut_prev,
             shortcut_next=settings.shortcut_next,
             middle_scroll_speed_cap=settings.middle_scroll_speed_cap,
+            middle_scroll_gain_percent=settings.middle_scroll_gain_percent,
         )
 
         root = QVBoxLayout(self)
@@ -372,6 +374,11 @@ class ReaderSettingsPanel(QWidget):
         self._font_size.setMinimumHeight(32)
         self._font_size.setValue(settings.font_size)
         self._font_size.valueChanged.connect(self._on_changed)
+        self._font_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self._font_size_slider.setRange(12, 40)
+        self._font_size_slider.setValue(settings.font_size)
+        self._font_size_slider.valueChanged.connect(self._font_size.setValue)
+        self._font_size.valueChanged.connect(self._font_size_slider.setValue)
 
         self._line_spacing = QSpinBox()
         self._line_spacing.setRange(110, 260)
@@ -381,6 +388,13 @@ class ReaderSettingsPanel(QWidget):
         self._line_spacing.setSuffix("%")
         self._line_spacing.setValue(settings.line_spacing_percent)
         self._line_spacing.valueChanged.connect(self._on_changed)
+        self._line_spacing_slider = QSlider(Qt.Orientation.Horizontal)
+        self._line_spacing_slider.setRange(110, 260)
+        self._line_spacing_slider.setSingleStep(10)
+        self._line_spacing_slider.setPageStep(10)
+        self._line_spacing_slider.setValue(settings.line_spacing_percent)
+        self._line_spacing_slider.valueChanged.connect(self._line_spacing.setValue)
+        self._line_spacing.valueChanged.connect(self._line_spacing_slider.setValue)
 
         self._line_width = QSpinBox()
         self._line_width.setRange(50, 100)
@@ -389,6 +403,11 @@ class ReaderSettingsPanel(QWidget):
         self._line_width.setSuffix("%")
         self._line_width.setValue(settings.line_width_percent)
         self._line_width.valueChanged.connect(self._on_changed)
+        self._line_width_slider = QSlider(Qt.Orientation.Horizontal)
+        self._line_width_slider.setRange(50, 100)
+        self._line_width_slider.setValue(settings.line_width_percent)
+        self._line_width_slider.valueChanged.connect(self._line_width.setValue)
+        self._line_width.valueChanged.connect(self._line_width_slider.setValue)
 
         self._text_color_btn = QPushButton("选择色彩")
         self._update_color_btn(self._text_color_btn, self._settings.text_color)
@@ -411,23 +430,34 @@ class ReaderSettingsPanel(QWidget):
         self._middle_speed_cap.setSuffix(" px/帧")
         self._middle_speed_cap.setValue(settings.middle_scroll_speed_cap)
         self._middle_speed_cap.valueChanged.connect(self._on_changed)
+
+        self._middle_speed_gain = QSpinBox()
+        self._middle_speed_gain.setRange(2, 80)
+        self._middle_speed_gain.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.PlusMinus)
+        self._middle_speed_gain.setMinimumHeight(32)
+        self._middle_speed_gain.setSuffix(" %")
+        self._middle_speed_gain.setValue(settings.middle_scroll_gain_percent)
+        self._middle_speed_gain.valueChanged.connect(self._on_changed)
         
         root.addLayout(self._row("阅读模式", self._reading_mode))
         root.addLayout(self._row("英文字体", self._font_family_en))
         root.addLayout(self._row("中文字体", self._font_family_zh))
-        root.addLayout(self._row("字体大小", self._font_size))
-        root.addLayout(self._row("行距比例", self._line_spacing))
-        root.addLayout(self._row("居中部分", self._line_width))
+        root.addLayout(self._row_with_slider("字体大小", self._font_size_slider, self._font_size))
+        root.addLayout(self._row_with_slider("行距比例", self._line_spacing_slider, self._line_spacing))
+        root.addLayout(self._row_with_slider("居中部分", self._line_width_slider, self._line_width))
         root.addLayout(self._row("文字颜色", self._text_color_btn))
         root.addLayout(self._row("背景颜色", self._bg_color_btn))
         root.addLayout(self._row("上章快捷键", self._shortcut_prev))
         root.addLayout(self._row("下章快捷键", self._shortcut_next))
+        root.addLayout(self._row("中键滚动系数", self._middle_speed_gain))
         root.addLayout(self._row("中键滚动上限", self._middle_speed_cap))
         root.addStretch(1)
 
         self.setStyleSheet("""
             QWidget#SettingsPanel { border-left: 1px solid rgba(0,0,0,0.1); background: #ffffff; color: #1a2333; }
             QSpinBox, QComboBox, QFontComboBox, QKeySequenceEdit { background: #f2f4f7; color: #1a2333; border: 1px solid #c9d0d8; padding: 4px 8px; border-radius: 4px; }
+            QSlider::groove:horizontal { background: #d7e0ea; height: 4px; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #6b8fb3; width: 12px; margin: -5px 0; border-radius: 6px; }
             QSpinBox::up-button, QSpinBox::down-button { width: 26px; border: none; background: #e2e8f0; }
             QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #cbd5e1; }
             QLabel { color: #1a2333; }
@@ -438,6 +468,14 @@ class ReaderSettingsPanel(QWidget):
         row = QHBoxLayout()
         row.addWidget(QLabel(label))
         row.addWidget(field, 1)
+        return row
+
+    @staticmethod
+    def _row_with_slider(label: str, slider: QSlider, spin: QSpinBox) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label))
+        row.addWidget(slider, 1)
+        row.addWidget(spin)
         return row
 
     def _update_color_btn(self, btn: QPushButton, hex_color: str):
@@ -468,6 +506,7 @@ class ReaderSettingsPanel(QWidget):
         self._settings.shortcut_prev = self._shortcut_prev.keySequence().toString()
         self._settings.shortcut_next = self._shortcut_next.keySequence().toString()
         self._settings.middle_scroll_speed_cap = self._middle_speed_cap.value()
+        self._settings.middle_scroll_gain_percent = self._middle_speed_gain.value()
         
         mode_idx = self._reading_mode.currentIndex()
         if mode_idx == 0:
@@ -476,8 +515,24 @@ class ReaderSettingsPanel(QWidget):
             self._settings.reading_mode = "paginated"
         else:
             self._settings.reading_mode = "chapter_scroll"
-            
-        self.settingsChanged.emit(self._settings)
+
+        # Emit a fresh value object so ReaderView can reliably compare old/new mode.
+        self.settingsChanged.emit(
+            ReaderVisualSettings(
+                font_family_zh=self._settings.font_family_zh,
+                font_family_en=self._settings.font_family_en,
+                font_size=self._settings.font_size,
+                line_spacing_percent=self._settings.line_spacing_percent,
+                line_width_percent=self._settings.line_width_percent,
+                text_color=self._settings.text_color,
+                background_color=self._settings.background_color,
+                reading_mode=self._settings.reading_mode,
+                shortcut_prev=self._settings.shortcut_prev,
+                shortcut_next=self._settings.shortcut_next,
+                middle_scroll_speed_cap=self._settings.middle_scroll_speed_cap,
+                middle_scroll_gain_percent=self._settings.middle_scroll_gain_percent,
+            )
+        )
 
 
 class ReaderSidebar(QWidget):
@@ -1012,7 +1067,8 @@ class ReaderView(QWidget):
         delta = self._middle_drag_current_y - self._middle_drag_y
         if abs(delta) < 1:
             return
-        speed = int(delta * 0.12)
+        gain = max(2, int(self._visual_settings.middle_scroll_gain_percent))
+        speed = int(delta * (gain / 100.0))
         if speed == 0:
             speed = 1 if delta > 0 else -1
         cap = max(8, int(self._visual_settings.middle_scroll_speed_cap))
@@ -1079,24 +1135,72 @@ class ReaderView(QWidget):
         self._set_progress(saved_progress)
         self._apply_visual_settings(self._visual_settings)
 
+    def _chapter_weights(self) -> list[int]:
+        if not self._chapters:
+            return [1]
+        return [max(1, len(ch.text)) for ch in self._chapters]
+
+    def _current_global_ratio(self) -> float:
+        if not self._chapters:
+            return 0.0
+        mode = self._visual_settings.reading_mode
+        if mode == "full_scroll":
+            bar = self._text.verticalScrollBar()
+            max_scroll = max(bar.maximum(), 1)
+            return min(1.0, max(0.0, bar.value() / max_scroll))
+
+        weights = self._chapter_weights()
+        total = max(1, sum(weights))
+        idx = max(0, min(self._current_chapter_idx, len(weights) - 1))
+        prefix = sum(weights[:idx])
+        bar = self._text.verticalScrollBar()
+        local_ratio = bar.value() / max(bar.maximum(), 1)
+        local_ratio = min(1.0, max(0.0, local_ratio))
+        return min(1.0, max(0.0, (prefix + local_ratio * weights[idx]) / total))
+
+    def _seek_by_global_ratio(self, ratio: float) -> None:
+        if not self._chapters:
+            return
+        ratio = min(1.0, max(0.0, ratio))
+        mode = self._visual_settings.reading_mode
+
+        if mode == "full_scroll":
+            bar = self._text.verticalScrollBar()
+            bar.setValue(int(ratio * max(bar.maximum(), 1)))
+            return
+
+        weights = self._chapter_weights()
+        total = max(1, sum(weights))
+        absolute = ratio * total
+        acc = 0.0
+        target_idx = 0
+        intra_ratio = 0.0
+        for idx, w in enumerate(weights):
+            if absolute <= acc + w or idx == len(weights) - 1:
+                target_idx = idx
+                intra_ratio = (absolute - acc) / max(1, w)
+                intra_ratio = min(1.0, max(0.0, intra_ratio))
+                break
+            acc += w
+
+        self._current_chapter_idx = target_idx
+        self._render_current_mode()
+        bar = self._text.verticalScrollBar()
+        bar.setValue(int(intra_ratio * max(bar.maximum(), 1)))
+
     def _update_chapter_markers(self) -> None:
         if not self._chapters:
             self._progress_slider.set_markers([])
             return
-        mode = self._visual_settings.reading_mode
         markers: list[tuple[float, str]] = []
-        if mode == "full_scroll":
-            total = sum(len(ch.text) for ch in self._chapters)
-            if total <= 0:
-                self._progress_slider.set_markers([])
-                return
-            acc = 0
-            for idx, ch in enumerate(self._chapters[:-1]):
-                acc += len(ch.text)
-                markers.append((acc / total, self._chapters[idx + 1].title))
-        else:
-            denom = max(1, len(self._chapters) - 1)
-            markers = [(idx / denom, self._chapters[idx].title) for idx in range(1, len(self._chapters) - 1)]
+        total = sum(max(1, len(ch.text)) for ch in self._chapters)
+        if total <= 0:
+            self._progress_slider.set_markers([])
+            return
+        acc = 0
+        for idx, ch in enumerate(self._chapters[:-1]):
+            acc += max(1, len(ch.text))
+            markers.append((acc / total, self._chapters[idx + 1].title))
         self._progress_slider.set_markers(markers)
 
     # ----------------------------------------------------
@@ -1123,6 +1227,7 @@ class ReaderView(QWidget):
                 self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             else: # chapter_scroll
                 self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._apply_text_metrics()
         self._update_chapter_markers()
         self._refresh_annotation_visuals()
 
@@ -1175,9 +1280,7 @@ class ReaderView(QWidget):
             self._current_chapter_idx = index
             self._render_current_mode()
             self._text.verticalScrollBar().setValue(0)
-            
-            # Recalculate generic ratio purely by chapter index
-            ratio = index / max(1, len(self._chapters) - 1)
+            ratio = self._current_global_ratio()
             
             self._syncing = True
             self._progress_slider.setValue(int(ratio * 1000))
@@ -1197,34 +1300,15 @@ class ReaderView(QWidget):
         if self._syncing: return
 
         ratio = value / 1000
-        mode = self._visual_settings.reading_mode
-        
         self._syncing = True
-        if mode == "full_scroll":
-            scrollbar = self._text.verticalScrollBar()
-            max_scroll = max(scrollbar.maximum(), 1)
-            scrollbar.setValue(int(ratio * max_scroll))
-        else:
-            # Shift chapters instead of scrolling the small box
-            target_idx = int(ratio * (len(self._chapters) - 1))
-            self._syncing = False # We override the flow here
-            self._jump_to_chapter(target_idx)
-            return
-
+        self._seek_by_global_ratio(ratio)
         self._syncing = False
         self._update_progress_display(ratio)
 
     def _on_scroll_changed(self, value: int) -> None:
         if self._syncing: return
 
-        mode = self._visual_settings.reading_mode
-        if mode != "full_scroll":
-            self._refresh_annotation_visuals()
-            return
-
-        scrollbar = self._text.verticalScrollBar()
-        max_scroll = max(scrollbar.maximum(), 1)
-        ratio = value / max_scroll if max_scroll > 0 else 0
+        ratio = self._current_global_ratio()
 
         self._syncing = True
         self._progress_slider.setValue(int(ratio * 1000))
@@ -1241,21 +1325,13 @@ class ReaderView(QWidget):
         self._on_slider_changed(int(bounded * 1000))
 
     def _update_progress_display(self, ratio: float):
-        mode = self._visual_settings.reading_mode
         if not self._chapters:
             self._progress_label.setText(f"{int(ratio * 100)}%")
             return
 
-        if mode == "full_scroll":
-            idx = int(ratio * (len(self._chapters) - 1))
-            ch = self._chapters[idx]
-            txt = f"{ch.title} | 全书 {int(ratio * 100)}%"
-            self._set_header_text(ch.title)
-        else:
-            ch = self._chapters[self._current_chapter_idx]
-            # Since the progress slider tracks chapters, the percentage is roughly chapters / total.
-            txt = f"{ch.title} | {self._current_chapter_idx + 1}/{len(self._chapters)}"
-            self._set_header_text(ch.title)
+        ch = self._chapters[max(0, min(self._current_chapter_idx, len(self._chapters) - 1))]
+        txt = f"{ch.title} | 全书 {int(ratio * 100)}%"
+        self._set_header_text(ch.title)
 
         self._progress_label.setText(txt)
         if self._book and self._book.file_path:
@@ -1280,59 +1356,59 @@ class ReaderView(QWidget):
 
     def _apply_visual_settings(self, settings: ReaderVisualSettings) -> None:
         old_mode = self._visual_settings.reading_mode
-        self._visual_settings = settings
-        
-        if old_mode != settings.reading_mode:
-            self._render_current_mode() # Repaint content if mode shifted!
-
-        ratio = self._progress_slider.value() / 1000.0
-        old_scroll = self._text.verticalScrollBar()
-        old_scroll_ratio = old_scroll.value() / max(old_scroll.maximum(), 1)
-        old_chapter_idx = self._current_chapter_idx
+        old_ratio = self._current_global_ratio()
+        self._visual_settings = ReaderVisualSettings(
+            font_family_zh=settings.font_family_zh,
+            font_family_en=settings.font_family_en,
+            font_size=settings.font_size,
+            line_spacing_percent=settings.line_spacing_percent,
+            line_width_percent=settings.line_width_percent,
+            text_color=settings.text_color,
+            background_color=settings.background_color,
+            reading_mode=settings.reading_mode,
+            shortcut_prev=settings.shortcut_prev,
+            shortcut_next=settings.shortcut_next,
+            middle_scroll_speed_cap=settings.middle_scroll_speed_cap,
+            middle_scroll_gain_percent=settings.middle_scroll_gain_percent,
+        )
 
         self.reading_area.setStyleSheet(f"QWidget {{ background: {settings.background_color}; color: {settings.text_color}; }}")
-
-        font = QFont(settings.font_family_zh, settings.font_size)
-        try:
-            font.setFamilies([settings.font_family_zh, settings.font_family_en])
-        except AttributeError:
-            font.setFamily(settings.font_family_zh)
-        self._text.setFont(font)
+        self._apply_text_metrics()
 
         if hasattr(self, '_sc_prev'):
             self._sc_prev.setKey(QKeySequence(settings.shortcut_prev))
         if hasattr(self, '_sc_next'):
             self._sc_next.setKey(QKeySequence(settings.shortcut_next))
-        
+
+        if old_mode != settings.reading_mode:
+            self._render_current_mode()
+
+        self._syncing = True
+        self._seek_by_global_ratio(old_ratio)
+        self._progress_slider.setValue(int(old_ratio * 1000))
+        self._syncing = False
+        self._update_progress_display(old_ratio)
+
+    def _apply_text_metrics(self) -> None:
+        s = self._visual_settings
+        font = QFont(s.font_family_zh, s.font_size)
+        try:
+            font.setFamilies([s.font_family_zh, s.font_family_en])
+        except AttributeError:
+            font.setFamily(s.font_family_zh)
+        self._text.setFont(font)
+
+        self._text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self._update_line_wrap_width()
+
         doc = self._text.document()
         if doc and doc.characterCount() > 0:
             cursor = QTextCursor(doc)
             cursor.select(QTextCursor.SelectionType.Document)
             block_format = cursor.blockFormat()
-            block_format.setLineHeight(settings.line_spacing_percent, 1) 
-            block_format.setBottomMargin(settings.font_size * 0.8) 
+            block_format.setLineHeight(s.line_spacing_percent, 1)
+            block_format.setBottomMargin(s.font_size * 0.8)
             cursor.mergeBlockFormat(block_format)
-
-        self._text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self._update_line_wrap_width()
-
-        if settings.reading_mode == old_mode:
-            if settings.reading_mode == "full_scroll":
-                new_scroll = self._text.verticalScrollBar()
-                self._syncing = True
-                new_scroll.setValue(int(old_scroll_ratio * max(new_scroll.maximum(), 1)))
-                self._syncing = False
-            else:
-                self._current_chapter_idx = max(0, min(old_chapter_idx, len(self._chapters) - 1))
-                if settings.reading_mode == "chapter_scroll":
-                    new_scroll = self._text.verticalScrollBar()
-                    self._syncing = True
-                    new_scroll.setValue(int(old_scroll_ratio * max(new_scroll.maximum(), 1)))
-                    self._syncing = False
-        else:
-            self._set_progress(ratio)
-
-        self._update_progress_display(self._progress_slider.value() / 1000.0)
 
     def _update_line_wrap_width(self) -> None:
         max_w = self.reading_area.width()
@@ -1571,9 +1647,13 @@ class ReaderView(QWidget):
             if pos is None:
                 continue
             start, length = pos
+            doc_len = self._text.document().characterCount()
+            if start < 0 or start >= doc_len:
+                continue
+            end_pos = min(start + max(length, 1), max(start + 1, doc_len - 1))
             cur = QTextCursor(self._text.document())
             cur.setPosition(start)
-            cur.setPosition(start + max(length, 1), QTextCursor.MoveMode.KeepAnchor)
+            cur.setPosition(end_pos, QTextCursor.MoveMode.KeepAnchor)
             ex = QTextEdit.ExtraSelection()
             ex.cursor = cur
             ex.format = highlight_fmt
@@ -1586,9 +1666,13 @@ class ReaderView(QWidget):
             if pos is None:
                 continue
             start, length = pos
+            doc_len = self._text.document().characterCount()
+            if start < 0 or start >= doc_len:
+                continue
+            end_pos = min(start + max(length, 1), max(start + 1, doc_len - 1))
             cur = QTextCursor(self._text.document())
             cur.setPosition(start)
-            cur.setPosition(start + max(length, 1), QTextCursor.MoveMode.KeepAnchor)
+            cur.setPosition(end_pos, QTextCursor.MoveMode.KeepAnchor)
             ex = QTextEdit.ExtraSelection()
             ex.cursor = cur
             ex.format = note_fmt
@@ -1799,7 +1883,10 @@ class ReaderView(QWidget):
                 self._search_panel.set_counter(idx + 1, len(self._search_matches))
                 break
         cursor = self._text.textCursor()
-        cursor.setPosition(start)
-        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        doc_len = self._text.document().characterCount()
+        s = max(0, min(start, max(0, doc_len - 1)))
+        e = max(s + 1, min(end, max(1, doc_len - 1)))
+        cursor.setPosition(s)
+        cursor.setPosition(e, QTextCursor.MoveMode.KeepAnchor)
         self._text.setTextCursor(cursor)
         self._text.ensureCursorVisible()
