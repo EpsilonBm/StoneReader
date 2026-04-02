@@ -4,8 +4,60 @@ import zipfile
 import urllib.parse
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
+import re
 
 from .text_chapters import ChapterItem
+
+
+def _extract_node_text(node) -> str:
+    if node is None:
+        return ""
+    text = node.get_text(separator=" ", strip=True)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _collect_epub_footnotes(soup: BeautifulSoup) -> dict[str, str]:
+    footnotes: dict[str, str] = {}
+
+    id_nodes: dict[str, object] = {}
+    for n in soup.find_all(attrs={"id": True}):
+        nid = str(n.get("id", "")).strip()
+        if nid:
+            id_nodes[nid] = n
+
+    for a in soup.find_all("a", href=True):
+        href = str(a.get("href", "")).strip()
+        if not href.startswith("#"):
+            continue
+        label = _extract_node_text(a)
+        if not label:
+            continue
+        m = re.fullmatch(r"\[?(\d{1,4})\]?", label)
+        if not m:
+            continue
+        num = m.group(1)
+        token = f"[{num}]"
+        target_id = href[1:]
+        note_text = _extract_node_text(id_nodes.get(target_id))
+        if not note_text:
+            continue
+        footnotes[token] = note_text
+        footnotes[num] = note_text
+
+    return footnotes
+
+
+def _collect_epub_media_markers(soup: BeautifulSoup) -> list[dict]:
+    media: list[dict] = []
+    for img in soup.find_all("img"):
+        src = str(img.get("src", "")).strip()
+        alt = str(img.get("alt", "")).strip()
+        if not src and not alt:
+            continue
+        media.append({"type": "image", "src": src, "alt": alt})
+        marker = f"[插图: {alt}]" if alt else f"[插图: {src}]"
+        img.replace_with("\n" + marker + "\n")
+    return media
 
 def get_namespace(tag: str) -> str:
     """Helper to extract namespace from xml tags."""
@@ -110,6 +162,9 @@ def parse_epub(file_path: str) -> list[ChapterItem]:
                         
                 for script in soup(["script", "style", "nav"]):
                     script.extract()
+
+                footnotes = _collect_epub_footnotes(soup)
+                media = _collect_epub_media_markers(soup)
                     
                 text_content = soup.get_text(separator='\n', strip=True)
                 if not text_content.strip(): 
@@ -125,7 +180,11 @@ def parse_epub(file_path: str) -> list[ChapterItem]:
                 
                 import re
                 chapter_text = re.sub(r'\n{3,}', '\n\n', "\n".join(cleaned))
-                chapters.append(ChapterItem(title, chapter_text))
+                if footnotes:
+                    chapter_text += "\n\n【注释】\n"
+                    for key in sorted([k for k in footnotes.keys() if k.startswith("[")], key=lambda s: int(s.strip("[]"))):
+                        chapter_text += f"{key} {footnotes[key]}\n"
+                chapters.append(ChapterItem(title, chapter_text, footnotes=footnotes, media=media))
                 
     except Exception as exc:
         import traceback

@@ -1131,6 +1131,8 @@ class ReaderView(QWidget):
         self._sidebar.setVisible(not self._sidebar.isVisible())
 
     def _handle_back(self) -> None:
+        if self._book and self._book.file_path:
+            self.progressChanged.emit(self._book.file_path, self._current_global_ratio())
         if self._settings_panel.isVisible():
             self._settings_panel.hide()
             return
@@ -1159,12 +1161,75 @@ class ReaderView(QWidget):
             if event.type() == QEvent.Type.MouseMove and self._middle_dragging:
                 self._middle_drag_current_y = event.globalPosition().toPoint().y()
                 return True
+            if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                if self._try_open_builtin_footnote(event.position().toPoint()):
+                    return True
             if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.MiddleButton:
                 self._middle_dragging = False
                 self._middle_scroll_timer.stop()
                 self._text.viewport().unsetCursor()
                 return True
         return super().eventFilter(obj, event)
+
+    def _try_open_builtin_footnote(self, pos: QPoint) -> bool:
+        cursor = self._text.cursorForPosition(pos)
+        if cursor.hasSelection():
+            return False
+        plain = self._text.toPlainText()
+        if not plain:
+            return False
+        cp = cursor.position()
+        left = max(0, cp - 12)
+        right = min(len(plain), cp + 12)
+        snippet = plain[left:right]
+
+        token = ""
+        num = ""
+        for m in re.finditer(r"\[(\d{1,4})\]", snippet):
+            gs = left + m.start()
+            ge = left + m.end()
+            if gs <= cp <= ge:
+                num = m.group(1)
+                token = m.group(0)
+                break
+        if not token:
+            return False
+
+        chapter_idx = self._current_chapter_idx
+        if self._visual_settings.reading_mode == "full_scroll":
+            chapter_idx = self._chapter_index_from_doc_pos(cp)
+        chapter_idx = max(0, min(chapter_idx, len(self._chapters) - 1))
+        ch = self._chapters[chapter_idx]
+
+        note_text = ch.footnotes.get(token) or ch.footnotes.get(num)
+        if not note_text:
+            return False
+
+        jump_token = f"\n{token} "
+        jump_pos = plain.find(jump_token, cp)
+        if jump_pos < 0:
+            jump_pos = plain.find(jump_token)
+        if jump_pos >= 0:
+            c = self._text.textCursor()
+            c.setPosition(jump_pos)
+            self._text.setTextCursor(c)
+            self._text.ensureCursorVisible()
+
+        if self._note_preview_popup is not None:
+            global_pos = self._text.viewport().mapToGlobal(pos)
+            self._note_preview_popup.show_note(global_pos, note_text)
+        return True
+
+    def _chapter_index_from_doc_pos(self, doc_pos: int) -> int:
+        offset = 0
+        for i, ch in enumerate(self._chapters):
+            head = len(f"【 {ch.title} 】\n")
+            start = offset + head
+            end = start + len(ch.text)
+            if start <= doc_pos <= end:
+                return i
+            offset = end + (3 if i < len(self._chapters) - 1 else 0)
+        return max(0, min(self._current_chapter_idx, len(self._chapters) - 1))
 
     def _tick_middle_scroll(self) -> None:
         if not self._middle_dragging:

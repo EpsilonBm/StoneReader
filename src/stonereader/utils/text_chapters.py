@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 
 @dataclass(slots=True)
@@ -15,6 +15,8 @@ class ChapterSpan:
 class ChapterItem:
     title: str
     text: str
+    footnotes: dict[str, str] = field(default_factory=dict)
+    media: list[dict] = field(default_factory=list)
 
 _CHAPTER_PATTERNS = [
     re.compile(r"^\s*第[零一二三四五六七八九十百千万0-9]+[章节回卷部篇集].*$"),
