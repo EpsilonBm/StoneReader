@@ -11,8 +11,8 @@ import html
 import json
 import base64
 
-from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QSize, QEvent, QTimer
-from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont, QKeySequence, QShortcut, QIcon, QAction, QPainter, QPixmap
+from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QSize, QEvent, QTimer, QPropertyAnimation, QEasingCurve, QRect, QUrl, QRegularExpression
+from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont, QKeySequence, QShortcut, QIcon, QAction, QPainter, QPixmap, QTextImageFormat, QImage, QTextDocument
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QColorDialog,
@@ -475,11 +475,15 @@ class ReaderSettingsPanel(QWidget):
         root.addWidget(title)
         
         self._reading_mode = QComboBox()
-        self._reading_mode.addItems(["全书滑动", "单章滑动", "翻页模式"])
+        self._reading_mode.addItems(["全书滑动", "单章滑动", "翻页模式（暂不可用）"])
+        try:
+            item = self._reading_mode.model().item(2)
+            if item is not None:
+                item.setEnabled(False)
+        except Exception:
+            pass
         if settings.reading_mode == "full_scroll":
             self._reading_mode.setCurrentIndex(0)
-        elif settings.reading_mode == "paginated":
-            self._reading_mode.setCurrentIndex(2)
         else:
             self._reading_mode.setCurrentIndex(1)
         self._reading_mode.currentIndexChanged.connect(self._on_changed)
@@ -635,8 +639,6 @@ class ReaderSettingsPanel(QWidget):
         mode_idx = self._reading_mode.currentIndex()
         if mode_idx == 0:
             self._settings.reading_mode = "full_scroll"
-        elif mode_idx == 2:
-            self._settings.reading_mode = "paginated"
         else:
             self._settings.reading_mode = "chapter_scroll"
 
@@ -1064,6 +1066,16 @@ class ReaderView(QWidget):
         self._media_popup: MediaPreviewPopup | None = None
         self._footnote_jump_target: dict | None = None
         self._footnote_return_positions: dict[tuple[int, str], int] = {}
+        self._loading_book = False
+        self._progress_steps = 1_000_000
+        self._paginated_pages: list[tuple[int, int, int, bool]] = []
+        self._paginated_current_page = 0
+        self._pending_restore_ratio: float | None = None
+        self._page_anim_old: QPropertyAnimation | None = None
+        self._page_anim_new: QPropertyAnimation | None = None
+        self._page_animating = False
+        self._flip_old_label: QLabel | None = None
+        self._flip_new_label: QLabel | None = None
 
         # Layout Setup
         self.main_layout = QHBoxLayout(self)
@@ -1188,15 +1200,20 @@ class ReaderView(QWidget):
         bottom_bar.setContentsMargins(20, 10, 20, 10)
 
         self._progress_slider = ChapterProgressSlider(Qt.Orientation.Horizontal)
-        self._progress_slider.setRange(0, 1000)
+        self._progress_slider.setRange(0, self._progress_steps)
         self._progress_slider.setStyleSheet("QSlider::handle:horizontal { background: rgba(0,0,0,0.3); width: 8px; border-radius: 4px; margin: -5px 0; } QSlider::groove:horizontal { background: rgba(0,0,0,0.1); height: 4px; border-radius: 2px; }")
         self._progress_slider.valueChanged.connect(self._on_slider_changed)
 
         self._progress_label = QLabel("0%")
         self._progress_label.setStyleSheet("color: rgba(0,0,0,0.5);")
+        self._page_label = QLabel("")
+        self._page_label.setStyleSheet("color: rgba(0,0,0,0.5);")
+        self._page_label.hide()
 
         bottom_bar.addWidget(self._progress_slider, 1)
         bottom_bar.addSpacing(12)
+        bottom_bar.addWidget(self._page_label)
+        bottom_bar.addSpacing(8)
         bottom_bar.addWidget(self._progress_label)
 
         reading_layout.addLayout(top_bar)
@@ -1250,8 +1267,9 @@ class ReaderView(QWidget):
         self._sidebar.setVisible(not self._sidebar.isVisible())
 
     def _handle_back(self) -> None:
-        if self._book and self._book.file_path:
-            self.progressChanged.emit(self._book.file_path, self._current_global_ratio())
+        snapshot = self.current_progress_snapshot()
+        if snapshot is not None:
+            self.progressChanged.emit(snapshot[0], snapshot[1])
         if self._settings_panel.isVisible():
             self._settings_panel.hide()
             return
@@ -1262,11 +1280,19 @@ class ReaderView(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._clear_page_animation_overlays()
         self._update_line_wrap_width()
+        if self._visual_settings.reading_mode == "paginated":
+            self._build_paginated_pages()
+            self._apply_pending_restore_ratio()
         self._refresh_annotation_visuals()
         self._reposition_search_panel()
         if self._note_preview_popup and self._note_preview_popup.isVisible():
             self._note_preview_popup.hide()
+            def showEvent(self, event) -> None:
+                super().showEvent(event)
+                self._apply_pending_restore_ratio()
+
         if self._footnote_popup and self._footnote_popup.isVisible():
             self._footnote_popup.hide()
         if self._media_popup and self._media_popup.isVisible():
@@ -1274,6 +1300,12 @@ class ReaderView(QWidget):
 
     def eventFilter(self, obj, event):
         if obj is self._text.viewport():
+            if event.type() == QEvent.Type.Wheel and self._visual_settings.reading_mode == "paginated":
+                if event.angleDelta().y() < 0:
+                    self._go_next()
+                elif event.angleDelta().y() > 0:
+                    self._go_prev()
+                return True
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.MiddleButton:
                 self._middle_dragging = True
                 self._middle_drag_y = event.globalPosition().toPoint().y()
@@ -1326,19 +1358,14 @@ class ReaderView(QWidget):
         chapter_idx = max(0, min(chapter_idx, len(self._chapters) - 1))
         ch = self._chapters[chapter_idx]
 
+        key = (chapter_idx, token)
         note_text = ch.footnotes.get(token) or ch.footnotes.get(num)
         if not note_text:
             return False
 
-        jump_pos = self._find_footnote_anchor_pos(plain, token, num)
-        key = (chapter_idx, token)
-        if jump_pos >= 0 and abs(cp - jump_pos) <= 4 and key in self._footnote_return_positions:
-            back = self._footnote_return_positions.pop(key)
-            c = self._text.textCursor()
-            c.setPosition(max(0, min(back, max(0, self._text.document().characterCount() - 1))))
-            self._text.setTextCursor(c)
-            self._text.ensureCursorVisible()
-            return True
+        jump_pos = self._find_footnote_anchor_pos(plain, token, num, cp)
+        if jump_pos < 0 and key in self._footnote_return_positions:
+            jump_pos = int(self._footnote_return_positions[key])
 
         self._footnote_jump_target = {
             "chapter_idx": chapter_idx,
@@ -1352,12 +1379,25 @@ class ReaderView(QWidget):
             self._footnote_popup.show_footnote(global_pos, token, note_text, jump_pos >= 0)
         return True
 
-    def _find_footnote_anchor_pos(self, plain: str, token: str, num: str) -> int:
-        for pat in (rf"\n[　 \t]*{re.escape(token)}\s", rf"\n[　 \t]*{re.escape(num)}\s"):
-            m = re.search(pat, plain)
-            if m:
-                return m.start() + 1
-        return -1
+    def _find_footnote_anchor_pos(self, plain: str, token: str, num: str, origin_pos: int) -> int:
+        if not plain:
+            return -1
+
+        positions: list[int] = [m.start() for m in re.finditer(re.escape(token), plain)]
+        if not positions and num:
+            positions = [m.start() for m in re.finditer(rf"\b{re.escape(num)}\b", plain)]
+        if not positions:
+            return -1
+
+        # Avoid jumping to the same inline marker that the user just clicked.
+        far_positions = [p for p in sorted(set(positions)) if abs(p - origin_pos) > 24]
+        if not far_positions:
+            return -1
+
+        after = [p for p in far_positions if p > origin_pos]
+        if after:
+            return after[0]
+        return far_positions[-1]
 
     def _jump_to_footnote_content(self) -> None:
         target = self._footnote_jump_target
@@ -1380,6 +1420,8 @@ class ReaderView(QWidget):
 
     def _try_open_media_marker(self, pos: QPoint) -> bool:
         cursor = self._text.cursorForPosition(pos)
+        if cursor.hasSelection():
+            return False
         plain = self._text.toPlainText()
         if not plain:
             return False
@@ -1437,33 +1479,60 @@ class ReaderView(QWidget):
         bar = self._text.verticalScrollBar()
         bar.setValue(bar.value() + speed)
 
+    def _clear_page_animation_overlays(self) -> None:
+        if self._page_anim_old is not None:
+            try:
+                self._page_anim_old.stop()
+            except Exception:
+                pass
+            self._page_anim_old = None
+        if self._page_anim_new is not None:
+            try:
+                self._page_anim_new.stop()
+            except Exception:
+                pass
+            self._page_anim_new = None
+        if self._flip_old_label is not None:
+            self._flip_old_label.deleteLater()
+            self._flip_old_label = None
+        if self._flip_new_label is not None:
+            self._flip_new_label.deleteLater()
+            self._flip_new_label = None
+        self._page_animating = False
+
     def load_book(self, book: Book) -> None:
-        self._book = book
-        self._bookmarks = list(getattr(book, "bookmarks", []))
-        self._highlights = list(getattr(book, "highlights", []))
-        self._notes = list(getattr(book, "notes", []))
-        self._set_header_text()
-        self._text.clear()
+        self._loading_book = True
+        try:
+            self._clear_page_animation_overlays()
+            self._book = book
+            self._bookmarks = list(getattr(book, "bookmarks", []))
+            self._highlights = list(getattr(book, "highlights", []))
+            self._notes = list(getattr(book, "notes", []))
+            self._set_header_text()
+            self._text.clear()
 
-        if not book.file_path:
-            self._chapters = [ChapterItem("全文", "该书籍没有关联本地文件路径。")]
+            if not book.file_path:
+                self._chapters = [ChapterItem("全文", "该书籍没有关联本地文件路径。")]
+                self._finish_load(book.read_progress)
+                return
+
+            path = Path(book.file_path)
+            ext = path.suffix.lower()
+            if ext == ".txt":
+                content = self._read_txt_raw(path)
+                self._chapters = parse_txt(content)
+            elif ext == ".epub":
+                self._chapters = parse_epub(str(path))
+            elif ext in {".mobi", ".azw3"}:
+                self._chapters = parse_mobi(str(path))
+            else:
+                self._chapters = [ChapterItem("格式不支持", f"当前不支持 {ext} 格式解析。")]
+
+            self._format_chapters(self._chapters)
             self._finish_load(book.read_progress)
-            return
-
-        path = Path(book.file_path)
-        ext = path.suffix.lower()
-        if ext == ".txt":
-            content = self._read_txt_raw(path)
-            self._chapters = parse_txt(content)
-        elif ext == ".epub":
-            self._chapters = parse_epub(str(path))
-        elif ext in {".mobi", ".azw3"}:
-            self._chapters = parse_mobi(str(path))
-        else:
-            self._chapters = [ChapterItem("格式不支持", f"当前不支持 {ext} 格式解析。")]
-
-        self._format_chapters(self._chapters)
-        self._finish_load(book.read_progress)
+        finally:
+            self._loading_book = False
+            self._update_progress_display(self._current_global_ratio())
 
     def _read_txt_raw(self, path: Path) -> str:
         for encoding in ("utf-8", "utf-8-sig", "gb18030", "gbk"):
@@ -1476,16 +1545,12 @@ class ReaderView(QWidget):
         return "读取失败: 编码不受支持。"
 
     def _format_chapters(self, chapters: list[ChapterItem]):
-        """Format text universally with ideograph indents."""
+        """Light normalization while preserving parser-produced paragraph semantics."""
         for ch in chapters:
-            cleaned = []
-            for line in ch.text.splitlines():
-                s = line.strip()
-                if s:
-                    cleaned.append("　　" + s)
-                else:
-                    cleaned.append("")
-            ch.text = "\n".join(cleaned)
+            lines = [line.rstrip() for line in ch.text.splitlines()]
+            text = "\n".join(lines).strip()
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            ch.text = text
 
     def _finish_load(self, saved_progress: float):
         self._sidebar.populate_toc(self._chapters)
@@ -1493,10 +1558,23 @@ class ReaderView(QWidget):
         self._update_chapter_markers()
         self._current_chapter_idx = 0
         self._render_current_mode()
+        self._pending_restore_ratio = min(max(saved_progress, 0.0), 1.0)
         self._set_progress(saved_progress)
         self._apply_visual_settings(self._visual_settings)
+        QTimer.singleShot(0, self._apply_pending_restore_ratio)
+
+    def _apply_pending_restore_ratio(self) -> None:
+        if self._pending_restore_ratio is None:
+            return
+        ratio = self._pending_restore_ratio
+        self._pending_restore_ratio = None
+        self._set_progress(ratio)
 
     def _chapter_weights(self) -> list[int]:
+        if self._visual_settings.reading_mode == "paginated":
+            if not self._paginated_pages:
+                return [1]
+            return [1 for _ in self._paginated_pages]
         if not self._chapters:
             return [1]
         return [max(1, len(ch.text)) for ch in self._chapters]
@@ -1505,6 +1583,11 @@ class ReaderView(QWidget):
         if not self._chapters:
             return 0.0
         mode = self._visual_settings.reading_mode
+        if mode == "paginated":
+            total = max(1, len(self._paginated_pages))
+            if total == 1:
+                return 0.0
+            return min(1.0, max(0.0, self._paginated_current_page / (total - 1)))
         if mode == "full_scroll":
             bar = self._text.verticalScrollBar()
             max_scroll = max(bar.maximum(), 1)
@@ -1525,6 +1608,19 @@ class ReaderView(QWidget):
         ratio = min(1.0, max(0.0, ratio))
         mode = self._visual_settings.reading_mode
 
+        if mode == "paginated":
+            if not self._paginated_pages:
+                self._build_paginated_pages()
+            total = len(self._paginated_pages)
+            if total <= 0:
+                return
+            if total == 1:
+                target_page = 0
+            else:
+                target_page = int(round(ratio * (total - 1)))
+            self._set_paginated_page(target_page, animate_dir=0)
+            return
+
         if mode == "full_scroll":
             bar = self._text.verticalScrollBar()
             bar.setValue(int(ratio * max(bar.maximum(), 1)))
@@ -1537,7 +1633,8 @@ class ReaderView(QWidget):
         target_idx = 0
         intra_ratio = 0.0
         for idx, w in enumerate(weights):
-            if absolute <= acc + w or idx == len(weights) - 1:
+            upper = acc + w
+            if absolute < upper or idx == len(weights) - 1:
                 target_idx = idx
                 intra_ratio = (absolute - acc) / max(1, w)
                 intra_ratio = min(1.0, max(0.0, intra_ratio))
@@ -1547,7 +1644,324 @@ class ReaderView(QWidget):
         self._current_chapter_idx = target_idx
         self._render_current_mode()
         bar = self._text.verticalScrollBar()
-        bar.setValue(int(intra_ratio * max(bar.maximum(), 1)))
+        bar.setValue(int(round(intra_ratio * max(bar.maximum(), 1))))
+        if mode == "paginated":
+            self._update_paginated_page_label()
+
+    def _compute_wrapped_line_ranges(self, text: str, max_width_px: int, font: QFont) -> list[tuple[int, int]]:
+        from PyQt6.QtGui import QTextLayout
+
+        ranges: list[tuple[int, int]] = []
+        offset = 0
+        paragraphs = text.split("\n")
+        for idx, para in enumerate(paragraphs):
+            base = offset
+            if para == "":
+                ranges.append((base, base))
+                if idx < len(paragraphs) - 1:
+                    offset += 1
+                continue
+
+            layout = QTextLayout(para, font)
+            layout.beginLayout()
+            while True:
+                line = layout.createLine()
+                if not line.isValid():
+                    break
+                line.setLineWidth(float(max_width_px))
+                s = int(line.textStart())
+                l = int(line.textLength())
+                ranges.append((base + s, base + s + l))
+            layout.endLayout()
+
+            offset += len(para)
+            if idx < len(paragraphs) - 1:
+                offset += 1
+        return ranges
+
+    def _effective_content_metrics(self) -> tuple[int, int]:
+        max_w = self.reading_area.width()
+        content_w = max(220, int(max_w * self._visual_settings.line_width_percent / 100))
+        font_px = max(10, int(self._visual_settings.font_size * 1.35))
+        line_height = max(16, int(font_px * self._visual_settings.line_spacing_percent / 100))
+        return content_w, line_height
+
+    def _build_paginated_pages(self) -> None:
+        if self._visual_settings.reading_mode != "paginated":
+            self._paginated_pages = []
+            self._paginated_current_page = 0
+            self._update_paginated_page_label()
+            return
+
+        content_w, line_h = self._effective_content_metrics()
+        page_h = max(120, self._text.viewport().height())
+        page_lines = max(4, page_h // max(1, line_h))
+        font = self._text.font()
+
+        pages: list[tuple[int, int, int, bool]] = []
+        for ci, ch in enumerate(self._chapters):
+            text = ch.text or ""
+            if not text:
+                pages.append((ci, 0, 0, True))
+                continue
+            line_ranges = self._compute_wrapped_line_ranges(text, content_w, font)
+            if not line_ranges:
+                pages.append((ci, 0, len(text), True))
+                continue
+
+            first = True
+            idx = 0
+            while idx < len(line_ranges):
+                cap = page_lines - 2 if first else page_lines
+                cap = max(1, cap)
+                end_line_idx = min(len(line_ranges), idx + cap)
+                start_off = line_ranges[idx][0]
+                end_off = line_ranges[end_line_idx - 1][1]
+                pages.append((ci, start_off, end_off, first))
+                idx = end_line_idx
+                first = False
+
+        self._paginated_pages = pages if pages else [(0, 0, 0, True)]
+        self._paginated_current_page = min(max(self._paginated_current_page, 0), len(self._paginated_pages) - 1)
+        self._update_paginated_page_label()
+
+    def _render_paginated_page_text(self, page_idx: int) -> str:
+        if not self._paginated_pages:
+            return ""
+        page_idx = min(max(page_idx, 0), len(self._paginated_pages) - 1)
+        chapter_idx, start, end, is_first = self._paginated_pages[page_idx]
+        ch = self._chapters[chapter_idx]
+        body = (ch.text or "")[start:end]
+        if is_first:
+            return f"【 {ch.title} 】\n\n{body}"
+        return body
+
+    def _decode_data_url_image(self, data_url: str) -> QImage | None:
+        if not data_url.startswith("data:") or ";base64," not in data_url:
+            return None
+        payload = data_url.split(";base64,", 1)[1]
+        try:
+            raw = base64.b64decode(payload)
+        except Exception:
+            return None
+        img = QImage()
+        if not img.loadFromData(raw):
+            return None
+        return img
+
+    def _collect_visible_media_entries(self) -> list[dict]:
+        doc_text = self._text.toPlainText()
+        if not doc_text:
+            return []
+
+        entries: list[dict] = []
+        mode = self._visual_settings.reading_mode
+        scan_pos = 0
+
+        if mode == "full_scroll":
+            for ch in self._chapters:
+                for m in ch.media:
+                    token = str(m.get("token", ""))
+                    alt = str(m.get("alt", ""))
+                    data_url = str(m.get("data_url", ""))
+                    if not token or not data_url:
+                        continue
+                    img = self._decode_data_url_image(data_url)
+                    if img is None:
+                        continue
+                    pos = doc_text.find(token, scan_pos)
+                    if pos < 0:
+                        pos = doc_text.find(token)
+                    if pos < 0:
+                        continue
+                    entries.append({"token": token, "alt": alt, "image": img, "pos": pos})
+                    scan_pos = pos + len(token)
+            return entries
+
+        # chapter_scroll / paginated: only current chapter media are relevant
+        chapter_idx = self._current_chapter_idx
+        if mode == "paginated" and self._paginated_pages:
+            chapter_idx = self._paginated_pages[self._paginated_current_page][0]
+        chapter_idx = max(0, min(chapter_idx, len(self._chapters) - 1))
+        ch = self._chapters[chapter_idx]
+        for m in ch.media:
+            token = str(m.get("token", ""))
+            alt = str(m.get("alt", ""))
+            data_url = str(m.get("data_url", ""))
+            if not token or not data_url:
+                continue
+            img = self._decode_data_url_image(data_url)
+            if img is None:
+                continue
+            pos = doc_text.find(token, scan_pos)
+            if pos < 0:
+                pos = doc_text.find(token)
+            if pos < 0:
+                continue
+            entries.append({"token": token, "alt": alt, "image": img, "pos": pos})
+            scan_pos = pos + len(token)
+        return entries
+
+    def _inject_inline_media(self) -> None:
+        entries = self._collect_visible_media_entries()
+        if not entries:
+            return
+        doc = self._text.document()
+        max_w = max(120, int(self._text.viewport().width() * 0.72))
+        for idx, entry in enumerate(sorted(entries, key=lambda x: int(x.get("pos", -1)), reverse=True)):
+            token = str(entry.get("token", ""))
+            alt = str(entry.get("alt", "")).strip()
+            img = entry.get("image")
+            pos = int(entry.get("pos", -1))
+            if not token or img is None or pos < 0:
+                continue
+
+            start = max(0, min(pos, max(0, doc.characterCount() - 1)))
+            end = max(start, min(start + len(token), max(0, doc.characterCount() - 1)))
+            found = QTextCursor(doc)
+            found.setPosition(start)
+            found.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+
+            name = f"inline-media-{idx}-{hash((token, pos)) & 0xfffffff}"
+            doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(name), img)
+
+            fmt = QTextImageFormat()
+            fmt.setName(name)
+            w = min(max_w, img.width())
+            h = int(w * img.height() / img.width()) if img.width() > 0 else 100
+            fmt.setWidth(float(max(80, w)))
+            fmt.setHeight(float(max(50, h)))
+
+            found.insertText("\n")
+            found.insertImage(fmt)
+            if alt:
+                found.insertText(f"\n{alt}")
+            found.insertText("\n")
+
+    def _reset_text_char_format_state(self) -> None:
+        doc = self._text.document()
+        if doc is None:
+            return
+        doc.setDefaultFont(self._text.font())
+        fmt = QTextCharFormat()
+        fmt.setFont(self._text.font())
+        fmt.setForeground(QColor(self._visual_settings.text_color))
+        fmt.setFontUnderline(False)
+        self._text.setCurrentCharFormat(fmt)
+
+    def _style_jumpable_tokens(self) -> None:
+        text = self._text.toPlainText()
+        if not text:
+            return
+        fmt = QTextCharFormat()
+        fmt.setFontUnderline(True)
+        fmt.setForeground(QColor("#1d4ed8"))
+        doc = self._text.document()
+        token_re = QRegularExpression(r"\[(\d{1,4})\]")
+        c = QTextCursor(doc)
+        while True:
+            c = doc.find(token_re, c)
+            if c.isNull():
+                break
+            c.mergeCharFormat(fmt)
+        self._reset_text_char_format_state()
+
+    def _play_page_flip_animation(self, old_pix: QPixmap, new_pix: QPixmap, direction: int) -> None:
+        viewport = self._text.viewport()
+        self._clear_page_animation_overlays()
+        w = viewport.width()
+        h = viewport.height()
+        if w <= 0 or h <= 0:
+            return
+
+        old_label = QLabel(viewport)
+        old_label.setPixmap(old_pix)
+        old_label.setGeometry(0, 0, w, h)
+        old_label.show()
+
+        new_label = QLabel(viewport)
+        new_label.setPixmap(new_pix)
+        start_new_x = w if direction > 0 else -w
+        new_label.setGeometry(start_new_x, 0, w, h)
+        new_label.show()
+        self._flip_old_label = old_label
+        self._flip_new_label = new_label
+
+        self._page_animating = True
+        self._page_anim_old = QPropertyAnimation(old_label, b"geometry", self)
+        self._page_anim_new = QPropertyAnimation(new_label, b"geometry", self)
+
+        self._page_anim_old.setDuration(220)
+        self._page_anim_new.setDuration(220)
+        self._page_anim_old.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._page_anim_new.setEasingCurve(QEasingCurve.Type.InOutCubic)
+
+        end_old_x = -w if direction > 0 else w
+        self._page_anim_old.setStartValue(QRect(0, 0, w, h))
+        self._page_anim_old.setEndValue(QRect(end_old_x, 0, w, h))
+        self._page_anim_new.setStartValue(QRect(start_new_x, 0, w, h))
+        self._page_anim_new.setEndValue(QRect(0, 0, w, h))
+
+        def _finish_one() -> None:
+            if self._page_anim_old is None or self._page_anim_new is None:
+                return
+            if self._page_anim_old.state() == QPropertyAnimation.State.Stopped and self._page_anim_new.state() == QPropertyAnimation.State.Stopped:
+                self._clear_page_animation_overlays()
+
+        self._page_anim_old.finished.connect(_finish_one)
+        self._page_anim_new.finished.connect(_finish_one)
+        self._page_anim_old.start()
+        self._page_anim_new.start()
+
+    def _set_paginated_page(self, page_idx: int, animate_dir: int = 0) -> None:
+        if not self._paginated_pages:
+            self._build_paginated_pages()
+        if not self._paginated_pages:
+            return
+        page_idx = min(max(page_idx, 0), len(self._paginated_pages) - 1)
+
+        if animate_dir == 0:
+            self._clear_page_animation_overlays()
+
+        old_pix = self._text.viewport().grab() if animate_dir != 0 else QPixmap()
+        self._paginated_current_page = page_idx
+        text = self._render_paginated_page_text(page_idx)
+        self._reset_text_char_format_state()
+        self._text.setPlainText(text)
+        self._apply_text_metrics()
+        self._inject_inline_media()
+        self._style_jumpable_tokens()
+        self._text.verticalScrollBar().setValue(0)
+        self._update_paginated_page_label()
+
+        if animate_dir != 0 and not old_pix.isNull():
+            new_pix = self._text.viewport().grab()
+            self._play_page_flip_animation(old_pix, new_pix, animate_dir)
+
+    def _update_paginated_page_label(self) -> None:
+        if self._visual_settings.reading_mode != "paginated":
+            self._page_label.hide()
+            return
+        total = max(1, len(self._paginated_pages))
+        current = min(total, max(1, self._paginated_current_page + 1))
+        self._page_label.setText(f"{current}/{total} 页")
+        self._page_label.show()
+
+    def _snap_paginated_to_nearest(self) -> None:
+        if self._visual_settings.reading_mode != "paginated":
+            return
+        self._update_paginated_page_label()
+
+    def _animate_to_page_index(self, page_idx: int) -> None:
+        if not self._paginated_pages:
+            return
+        target = max(0, min(page_idx, len(self._paginated_pages) - 1))
+        if target == self._paginated_current_page:
+            self._update_paginated_page_label()
+            return
+        direction = 1 if target > self._paginated_current_page else -1
+        self._set_paginated_page(target, animate_dir=direction)
+        self._update_progress_display(self._current_global_ratio())
 
     def _update_chapter_markers(self) -> None:
         if not self._chapters:
@@ -1571,24 +1985,40 @@ class ReaderView(QWidget):
     def _render_current_mode(self):
         """Update QTextEdit based on mode vs chapters state."""
         mode = self._visual_settings.reading_mode
+        self._clear_page_animation_overlays()
         self._btn_prev_area.setVisible(mode != "full_scroll")
         self._btn_next_area.setVisible(mode != "full_scroll")
         
         if mode == "full_scroll":
             # Combine all texts
             full_text = "\n\n\n".join([f"【 {ch.title} 】\n{ch.text}" for ch in self._chapters])
+            self._reset_text_char_format_state()
             self._text.setPlainText(full_text)
             self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        else:
+            self._apply_text_metrics()
+            self._inject_inline_media()
+            self._style_jumpable_tokens()
+        elif mode == "chapter_scroll":
             # Single chapter or Paginated load just the current chapter
             ch = self._chapters[self._current_chapter_idx]
+            self._reset_text_char_format_state()
             self._text.setPlainText(f"【 {ch.title} 】\n\n{ch.text}")
-            
-            if mode == "paginated":
-                self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            else: # chapter_scroll
-                self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._apply_text_metrics()
+
+            self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            self._apply_text_metrics()
+            self._inject_inline_media()
+            self._style_jumpable_tokens()
+        else:
+            self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self._build_paginated_pages()
+            self._set_paginated_page(self._paginated_current_page, animate_dir=0)
+
+        if mode == "paginated":
+            self._build_paginated_pages()
+        else:
+            self._paginated_pages = []
+            self._paginated_current_page = 0
+            self._update_paginated_page_label()
         self._update_chapter_markers()
         self._refresh_annotation_visuals()
 
@@ -1597,12 +2027,10 @@ class ReaderView(QWidget):
         bar = self._text.verticalScrollBar()
         
         if mode == "paginated":
-            if bar.value() <= bar.minimum():
-                if self._current_chapter_idx > 0:
-                    self._jump_to_chapter(self._current_chapter_idx - 1)
-                    # For a real complete app, jump scrollbar to max here, but let's jump to top of prev chapter for simplicity
+            if self._paginated_current_page <= 0:
+                return
             else:
-                bar.setValue(bar.value() - self._text.viewport().height())
+                self._animate_to_page_index(self._paginated_current_page - 1)
         elif mode == "chapter_scroll":
             if self._current_chapter_idx > 0:
                 self._jump_to_chapter(self._current_chapter_idx - 1)
@@ -1612,11 +2040,10 @@ class ReaderView(QWidget):
         bar = self._text.verticalScrollBar()
         
         if mode == "paginated":
-            if bar.value() >= bar.maximum() - 10: # leeway
-                if self._current_chapter_idx < len(self._chapters) - 1:
-                    self._jump_to_chapter(self._current_chapter_idx + 1)
+            if self._paginated_current_page >= len(self._paginated_pages) - 1:
+                return
             else:
-                bar.setValue(bar.value() + self._text.viewport().height())
+                self._animate_to_page_index(self._paginated_current_page + 1)
         elif mode == "chapter_scroll":
             if self._current_chapter_idx < len(self._chapters) - 1:
                 self._jump_to_chapter(self._current_chapter_idx + 1)
@@ -1638,13 +2065,23 @@ class ReaderView(QWidget):
             QTimer.singleShot(0, lambda: self._on_scroll_changed(self._text.verticalScrollBar().value()))
         else:
             # Single/Paginated
-            self._current_chapter_idx = index
-            self._render_current_mode()
-            self._text.verticalScrollBar().setValue(0)
-            ratio = self._current_global_ratio()
+            if mode == "paginated":
+                if not self._paginated_pages:
+                    self._build_paginated_pages()
+                target_page = next((i for i, p in enumerate(self._paginated_pages) if p[0] == index), None)
+                if target_page is None:
+                    return
+                self._current_chapter_idx = index
+                self._set_paginated_page(target_page, animate_dir=0)
+                ratio = self._current_global_ratio()
+            else:
+                self._current_chapter_idx = index
+                self._render_current_mode()
+                self._text.verticalScrollBar().setValue(0)
+                ratio = self._current_global_ratio()
             
             self._syncing = True
-            self._progress_slider.setValue(int(ratio * 1000))
+            self._progress_slider.setValue(self._slider_value_from_ratio(ratio))
             self._progress_label.setText(f"{int(ratio * 100)}%")
             self._syncing = False
             
@@ -1660,19 +2097,22 @@ class ReaderView(QWidget):
     def _on_slider_changed(self, value: int) -> None:
         if self._syncing: return
 
-        ratio = value / 1000
+        ratio = self._ratio_from_slider_value(value)
         self._syncing = True
         self._seek_by_global_ratio(ratio)
         self._syncing = False
-        self._update_progress_display(ratio)
+        self._update_progress_display(self._current_global_ratio())
 
     def _on_scroll_changed(self, value: int) -> None:
         if self._syncing: return
 
+        if self._visual_settings.reading_mode == "paginated":
+            self._update_paginated_page_label()
+
         ratio = self._current_global_ratio()
 
         self._syncing = True
-        self._progress_slider.setValue(int(ratio * 1000))
+        self._progress_slider.setValue(self._slider_value_from_ratio(ratio))
         self._syncing = False
 
         self._update_progress_display(ratio)
@@ -1681,9 +2121,28 @@ class ReaderView(QWidget):
     def _set_progress(self, ratio: float) -> None:
         bounded = min(max(ratio, 0.0), 1.0)
         self._syncing = True
-        self._progress_slider.setValue(int(bounded * 1000))
+        self._seek_by_global_ratio(bounded)
+        self._progress_slider.setValue(self._slider_value_from_ratio(self._current_global_ratio()))
         self._syncing = False
-        self._on_slider_changed(int(bounded * 1000))
+        if self._visual_settings.reading_mode == "paginated":
+            if self._paginated_pages:
+                self._current_chapter_idx = self._paginated_pages[self._paginated_current_page][0]
+        self._update_progress_display(self._current_global_ratio())
+
+    def _slider_value_from_ratio(self, ratio: float) -> int:
+        bounded = min(max(ratio, 0.0), 1.0)
+        return int(round(bounded * self._progress_steps))
+
+    def _ratio_from_slider_value(self, value: int) -> float:
+        if self._progress_steps <= 0:
+            return 0.0
+        bounded = min(max(value, 0), self._progress_steps)
+        return bounded / self._progress_steps
+
+    def current_progress_snapshot(self) -> tuple[str, float] | None:
+        if not self._book or not self._book.file_path:
+            return None
+        return (self._book.file_path, self._current_global_ratio())
 
     def _update_progress_display(self, ratio: float):
         if not self._chapters:
@@ -1695,7 +2154,7 @@ class ReaderView(QWidget):
         self._set_header_text(ch.title)
 
         self._progress_label.setText(txt)
-        if self._book and self._book.file_path:
+        if self._book and self._book.file_path and not self._loading_book:
             self.progressChanged.emit(self._book.file_path, ratio)
 
     # ----------------------------------------------------
@@ -1746,7 +2205,7 @@ class ReaderView(QWidget):
 
         self._syncing = True
         self._seek_by_global_ratio(old_ratio)
-        self._progress_slider.setValue(int(old_ratio * 1000))
+        self._progress_slider.setValue(self._slider_value_from_ratio(old_ratio))
         self._syncing = False
         self._update_progress_display(old_ratio)
 

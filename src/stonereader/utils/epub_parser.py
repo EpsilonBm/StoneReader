@@ -12,11 +12,31 @@ from pathlib import PurePosixPath
 from .text_chapters import ChapterItem
 
 
+_BLOCK_TAGS = {
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "li",
+    "blockquote",
+    "pre",
+}
+
+
+def _normalize_whitespace(text: str) -> str:
+    text = text.replace("\u00a0", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
 def _extract_node_text(node) -> str:
     if node is None:
         return ""
     text = node.get_text(separator=" ", strip=True)
-    return re.sub(r"\s+", " ", text).strip()
+    return _normalize_whitespace(text)
 
 
 def _collect_epub_footnotes(soup: BeautifulSoup) -> dict[str, str]:
@@ -42,14 +62,21 @@ def _collect_epub_footnotes(soup: BeautifulSoup) -> dict[str, str]:
         token = f"[{num}]"
         target_id = href[1:]
         target_node = id_nodes.get(target_id)
-        note_text = _extract_node_text(target_node)
+        note_node = target_node
+        if getattr(target_node, "name", "") == "a" and getattr(target_node, "parent", None) is not None:
+            note_node = target_node.parent
+
+        note_text = _extract_node_text(note_node)
+        if not note_text:
+            continue
+        note_text = re.sub(rf"^\[?{re.escape(num)}\]?\s*", "", note_text).strip()
         if not note_text:
             continue
         try:
-            if target_node is not None:
-                now_text = _extract_node_text(target_node)
+            if note_node is not None:
+                now_text = _extract_node_text(note_node)
                 if token not in now_text and f"{num} " not in now_text:
-                    target_node.insert(0, f"{token} ")
+                    note_node.insert(0, f"{token} ")
         except Exception:
             pass
         footnotes[token] = note_text
@@ -90,8 +117,35 @@ def _collect_epub_media_markers(soup: BeautifulSoup, archive: zipfile.ZipFile, c
 
         media.append(entry)
         marker = f"{token} {alt}" if alt else token
-        img.replace_with("\n" + marker + "\n")
+        img.replace_with(f" {marker} ")
     return media
+
+
+def _iter_meaningful_blocks(soup: BeautifulSoup):
+    body = soup.body or soup
+    for node in body.descendants:
+        name = getattr(node, "name", None)
+        if name not in _BLOCK_TAGS:
+            continue
+        parent = node.parent
+        nested = False
+        while parent is not None and parent is not body:
+            parent_name = getattr(parent, "name", None)
+            if parent_name in _BLOCK_TAGS:
+                nested = True
+                break
+            parent = parent.parent
+        if not nested:
+            yield node
+
+
+def _block_to_paragraph_text(node) -> str:
+    text = _normalize_whitespace(node.get_text(separator=" ", strip=True))
+    if not text:
+        return ""
+    if getattr(node, "name", "") == "li":
+        return f"• {text}"
+    return text
 
 def get_namespace(tag: str) -> str:
     """Helper to extract namespace from xml tags."""
@@ -199,21 +253,22 @@ def parse_epub(file_path: str) -> list[ChapterItem]:
 
                 footnotes = _collect_epub_footnotes(soup)
                 media = _collect_epub_media_markers(soup, archive, full_path)
-                    
-                text_content = soup.get_text(separator='\n', strip=True)
-                if not text_content.strip(): 
+
+                paragraphs: list[str] = []
+                for block in _iter_meaningful_blocks(soup):
+                    p_text = _block_to_paragraph_text(block)
+                    if p_text:
+                        paragraphs.append(p_text)
+
+                if not paragraphs:
+                    fallback = _normalize_whitespace(soup.get_text(separator=" ", strip=True))
+                    if fallback:
+                        paragraphs = [fallback]
+
+                if not paragraphs:
                     continue
-                
-                cleaned = []
-                for line in text_content.split('\n'):
-                    line = line.strip()
-                    if line: 
-                        cleaned.append("　　" + line)
-                    else: 
-                        cleaned.append("")
-                
-                import re
-                chapter_text = re.sub(r'\n{3,}', '\n\n', "\n".join(cleaned))
+
+                chapter_text = re.sub(r"\n{3,}", "\n\n", "\n\n".join(paragraphs)).strip()
                 chapters.append(ChapterItem(title, chapter_text, footnotes=footnotes, media=media))
                 
     except Exception as exc:
