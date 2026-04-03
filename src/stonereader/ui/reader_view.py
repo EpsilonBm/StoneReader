@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -1076,6 +1077,9 @@ class ReaderView(QWidget):
         self._page_animating = False
         self._flip_old_label: QLabel | None = None
         self._flip_new_label: QLabel | None = None
+        self._media_debug_enabled = os.environ.get("STONEREADER_MEDIA_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
+        self._media_debug_path = Path(__file__).resolve().parents[3] / ".local" / "library" / "media_debug.log"
+        self._media_debug_lines: list[str] = []
 
         # Layout Setup
         self.main_layout = QHBoxLayout(self)
@@ -1240,6 +1244,8 @@ class ReaderView(QWidget):
         self._sc_prev.activated.connect(self._go_prev)
         self._sc_next = QShortcut(QKeySequence(self._visual_settings.shortcut_next), self)
         self._sc_next.activated.connect(self._go_next)
+        self._media_debug_shortcut = QShortcut(QKeySequence("Ctrl+Shift+I"), self)
+        self._media_debug_shortcut.activated.connect(self._show_media_debug_report)
 
         self._quick_bar = SelectionQuickBar(self)
         self._quick_bar.bookmarkClicked.connect(self._add_bookmark_from_selection)
@@ -1259,6 +1265,39 @@ class ReaderView(QWidget):
         self.main_layout.addWidget(self._settings_panel, 0)
 
         self._apply_visual_settings(self._visual_settings)
+        if self._media_debug_enabled:
+            self._media_debug_log(f"media_debug_enabled=True path={self._media_debug_path}")
+
+    def _media_debug_log(self, message: str) -> None:
+        if not self._media_debug_enabled:
+            return
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{ts}] {message}"
+        self._media_debug_lines.append(line)
+        if len(self._media_debug_lines) > 300:
+            self._media_debug_lines = self._media_debug_lines[-300:]
+        try:
+            self._media_debug_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._media_debug_path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+    def _show_media_debug_report(self) -> None:
+        if not self._media_debug_enabled:
+            QMessageBox.information(
+                self,
+                "媒体调试",
+                "媒体调试未开启。\n\n请先以环境变量 STONEREADER_MEDIA_DEBUG=1 启动程序后重现问题。",
+            )
+            return
+        tail = self._media_debug_lines[-30:]
+        body = "\n".join(tail) if tail else "(当前会话暂无媒体调试日志)"
+        QMessageBox.information(
+            self,
+            "媒体调试（最近30条）",
+            f"日志文件: {self._media_debug_path}\n\n{body}",
+        )
 
     def _toggle_settings(self) -> None:
         self._settings_panel.setVisible(not self._settings_panel.isVisible())
@@ -1554,6 +1593,22 @@ class ReaderView(QWidget):
 
     def _finish_load(self, saved_progress: float):
         self._sidebar.populate_toc(self._chapters)
+        if self._media_debug_enabled:
+            self._media_debug_log(f"load_book: chapters={len(self._chapters)}")
+            for idx, ch in enumerate(self._chapters):
+                media_count = len(ch.media)
+                if media_count <= 0:
+                    continue
+                self._media_debug_log(f"chapter[{idx}] title={ch.title!r} media_count={media_count}")
+                for mi, m in enumerate(ch.media):
+                    token = str(m.get("token", ""))
+                    src = str(m.get("src", ""))
+                    data_url = str(m.get("data_url", ""))
+                    has_data = bool(data_url)
+                    mime_hint = data_url.split(";", 1)[0] if data_url.startswith("data:") else ""
+                    self._media_debug_log(
+                        f"chapter[{idx}] media[{mi}] token={token!r} src={src!r} has_data_url={has_data} mime={mime_hint!r}"
+                    )
         self._sidebar.populate_annotations(self._bookmarks, self._highlights, self._notes)
         self._update_chapter_markers()
         self._current_chapter_idx = 0
@@ -1738,15 +1793,19 @@ class ReaderView(QWidget):
 
     def _decode_data_url_image(self, data_url: str) -> QImage | None:
         if not data_url.startswith("data:") or ";base64," not in data_url:
+            self._media_debug_log("decode_fail: invalid_data_url_prefix_or_format")
             return None
         payload = data_url.split(";base64,", 1)[1]
         try:
             raw = base64.b64decode(payload)
-        except Exception:
+        except Exception as exc:
+            self._media_debug_log(f"decode_fail: base64_error={exc}")
             return None
         img = QImage()
         if not img.loadFromData(raw):
+            self._media_debug_log("decode_fail: qimage_load_from_data_failed")
             return None
+        self._media_debug_log(f"decode_ok: size={img.width()}x{img.height()} bytes={len(raw)}")
         return img
 
     def _collect_visible_media_entries(self) -> list[dict]:
@@ -1765,16 +1824,20 @@ class ReaderView(QWidget):
                     alt = str(m.get("alt", ""))
                     data_url = str(m.get("data_url", ""))
                     if not token or not data_url:
+                        self._media_debug_log(f"collect_skip: token_or_data_missing token={token!r} has_data={bool(data_url)}")
                         continue
                     img = self._decode_data_url_image(data_url)
                     if img is None:
+                        self._media_debug_log(f"collect_skip: decode_none token={token!r}")
                         continue
                     pos = doc_text.find(token, scan_pos)
                     if pos < 0:
                         pos = doc_text.find(token)
                     if pos < 0:
+                        self._media_debug_log(f"collect_skip: token_not_found_in_doc token={token!r}")
                         continue
                     entries.append({"token": token, "alt": alt, "image": img, "pos": pos})
+                    self._media_debug_log(f"collect_ok: token={token!r} pos={pos} alt={alt!r}")
                     scan_pos = pos + len(token)
             return entries
 
@@ -1789,31 +1852,42 @@ class ReaderView(QWidget):
             alt = str(m.get("alt", ""))
             data_url = str(m.get("data_url", ""))
             if not token or not data_url:
+                self._media_debug_log(f"collect_skip: token_or_data_missing token={token!r} has_data={bool(data_url)}")
                 continue
             img = self._decode_data_url_image(data_url)
             if img is None:
+                self._media_debug_log(f"collect_skip: decode_none token={token!r}")
                 continue
             pos = doc_text.find(token, scan_pos)
             if pos < 0:
                 pos = doc_text.find(token)
             if pos < 0:
+                self._media_debug_log(f"collect_skip: token_not_found_in_doc token={token!r}")
                 continue
             entries.append({"token": token, "alt": alt, "image": img, "pos": pos})
+            self._media_debug_log(f"collect_ok: token={token!r} pos={pos} alt={alt!r}")
             scan_pos = pos + len(token)
         return entries
 
     def _inject_inline_media(self) -> None:
         entries = self._collect_visible_media_entries()
         if not entries:
+            remaining_tokens = re.findall(r"\[图\d{1,4}\]", self._text.toPlainText())
+            if remaining_tokens:
+                self._media_debug_log(
+                    f"inject_none: no_resolved_entries remaining_tokens={sorted(set(remaining_tokens))}"
+                )
             return
         doc = self._text.document()
         max_w = max(120, int(self._text.viewport().width() * 0.72))
+        replaced = 0
         for idx, entry in enumerate(sorted(entries, key=lambda x: int(x.get("pos", -1)), reverse=True)):
             token = str(entry.get("token", ""))
             alt = str(entry.get("alt", "")).strip()
             img = entry.get("image")
             pos = int(entry.get("pos", -1))
             if not token or img is None or pos < 0:
+                self._media_debug_log(f"inject_skip: bad_entry token={token!r} pos={pos}")
                 continue
 
             start = max(0, min(pos, max(0, doc.characterCount() - 1)))
@@ -1837,6 +1911,13 @@ class ReaderView(QWidget):
             if alt:
                 found.insertText(f"\n{alt}")
             found.insertText("\n")
+            replaced += 1
+            self._media_debug_log(f"inject_ok: token={token!r} pos={pos} img={img.width()}x{img.height()} alt={alt!r}")
+
+        remaining_tokens = re.findall(r"\[图\d{1,4}\]", self._text.toPlainText())
+        self._media_debug_log(
+            f"inject_summary: replaced={replaced} remaining_tokens={sorted(set(remaining_tokens))}"
+        )
 
     def _reset_text_char_format_state(self) -> None:
         doc = self._text.document()

@@ -2,6 +2,7 @@
 
 import zipfile
 import urllib.parse
+import posixpath
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
 import re
@@ -90,8 +91,10 @@ def _normalize_zip_path(path: str) -> str:
 
 
 def _resolve_relative_zip_path(chapter_path: str, rel_path: str) -> str:
-    chapter_dir = PurePosixPath(chapter_path).parent
-    return _normalize_zip_path(str((chapter_dir / rel_path).as_posix()))
+    chapter_dir = PurePosixPath(chapter_path).parent.as_posix()
+    joined = posixpath.join(chapter_dir, rel_path)
+    normalized = posixpath.normpath(joined)
+    return _normalize_zip_path(normalized)
 
 
 def _collect_epub_media_markers(soup: BeautifulSoup, archive: zipfile.ZipFile, chapter_path: str) -> list[dict]:
