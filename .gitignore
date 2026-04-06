@@ -24,3 +24,8 @@ htmlcov/
 
 # Local app data
 .local/
+
+# Local error capture logs
+test_error/
+test_output/
+testbook/

@@ -115,6 +115,24 @@ class LibraryService:
         book.is_read = is_read
         self._save()
 
+    def set_favorite_status(self, file_path: str, is_favorite: bool) -> None:
+        book = self.get_by_path(file_path)
+        if book is None:
+            return
+        book.is_favorite = is_favorite
+        self._save()
+
+    def remove_book(self, file_path: str) -> None:
+        resolved = str(Path(file_path).resolve())
+        before = len(self._books)
+        self._books = [
+            book
+            for book in self._books
+            if not (book.file_path and str(Path(book.file_path).resolve()) == resolved)
+        ]
+        if len(self._books) != before:
+            self._save()
+
     def update_annotations(
         self,
         file_path: str,
@@ -198,6 +216,26 @@ class LibraryService:
             loaded_books.append(self._deserialize_book(raw))
 
         self._books = loaded_books
+        dirty = False
+        for book in self._books:
+            if not book.file_path:
+                continue
+            needs_author = not book.author or book.author == "Unknown"
+            needs_cover = not book.cover_path or not Path(book.cover_path).exists()
+            if not (needs_author or needs_cover):
+                continue
+            meta = self._extract_metadata(book.file_path)
+            if needs_author and meta.get("author"):
+                book.author = meta["author"]
+                dirty = True
+            if needs_cover and meta.get("cover_path"):
+                book.cover_path = meta["cover_path"]
+                dirty = True
+            if meta.get("title") and (not book.title or book.title == Path(book.file_path).stem):
+                book.title = meta["title"]
+                dirty = True
+        if dirty:
+            self._save()
 
     def _save(self) -> None:
         payload = {

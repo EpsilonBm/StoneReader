@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QCloseEvent
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -316,6 +316,14 @@ class MainWindow(QMainWindow):
     def _show_toast(self, text: str) -> None:
         if hasattr(self, "_toast"):
             self._toast.show_message(text)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        try:
+            snapshot = self._reader.current_progress_snapshot()
+            if snapshot is not None:
+                self._library.update_progress(snapshot[0], snapshot[1])
+        finally:
+            super().closeEvent(event)
 
     def _apply_style(self) -> None:
         self._sync_view_mode_button()
