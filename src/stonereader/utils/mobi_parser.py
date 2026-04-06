@@ -7,19 +7,49 @@ import re
 import urllib.parse
 import xml.etree.ElementTree as ET
 import warnings
+import base64
+import mimetypes
 
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
 from .text_chapters import ChapterItem, parse_txt
 
 
-def _strip_html_to_text(content: bytes) -> str:
+def _extract_html_text_and_media(content: bytes, html_path: Path) -> tuple[str, list[dict]]:
     soup = _parse_document(content)
     for bad in soup(["script", "style", "nav"]):
         bad.extract()
+
+    media: list[dict] = []
+    for img in soup.find_all("img"):
+        src = str(img.get("src", "")).strip()
+        alt = str(img.get("alt", "")).strip()
+        if not src and not alt:
+            continue
+
+        token = f"[图{len(media) + 1}]"
+        entry = {"type": "image", "token": token, "src": src, "alt": alt}
+
+        src_clean = urllib.parse.unquote(src).split("#", 1)[0].split("?", 1)[0]
+        if src_clean.lower().startswith("data:") and ";base64," in src_clean:
+            entry["data_url"] = src_clean
+        elif src_clean and not src_clean.lower().startswith(("http://", "https://")):
+            try:
+                candidate = (html_path.parent / src_clean).resolve()
+                if candidate.is_file():
+                    raw = candidate.read_bytes()
+                    mime = mimetypes.guess_type(candidate.name)[0] or "image/jpeg"
+                    entry["data_url"] = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+            except Exception:
+                pass
+
+        media.append(entry)
+        marker = f"{token} {alt}" if alt else token
+        img.replace_with(f" {marker} ")
+
     text = soup.get_text(separator="\n", strip=True)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return "\n".join("　　" + line for line in lines)
+    return "\n".join("　　" + line for line in lines), media
 
 
 def _extract_title_from_html(content: bytes) -> str:
@@ -96,7 +126,7 @@ def parse_mobi(file_path: str) -> list[ChapterItem]:
         if html_files:
             for p in html_files:
                 raw = p.read_bytes()
-                text = _strip_html_to_text(raw)
+                text, media = _extract_html_text_and_media(raw, p)
                 if not text.strip():
                     continue
                 title = toc_map.get(p.name.lower()) or _extract_title_from_html(raw)
@@ -105,7 +135,7 @@ def parse_mobi(file_path: str) -> list[ChapterItem]:
                         title = f"章节 {len(chapters) + 1}"
                     else:
                         title = p.stem
-                chapters.append(ChapterItem(title, text))
+                chapters.append(ChapterItem(title, text, media=media))
 
         if not chapters:
             txt_files = sorted([p for p in root.rglob("*") if p.suffix.lower() in {".txt"}])
