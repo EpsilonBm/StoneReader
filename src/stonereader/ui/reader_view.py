@@ -11,6 +11,7 @@ import re
 import html
 import json
 import base64
+from typing import Callable
 
 from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QSize, QEvent, QTimer, QPropertyAnimation, QEasingCurve, QRect, QUrl, QRegularExpression
 from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont, QKeySequence, QShortcut, QIcon, QAction, QPainter, QPixmap, QTextImageFormat, QImage, QTextDocument
@@ -36,6 +37,8 @@ from PyQt6.QtWidgets import (
     QStyle,
     QStyleOptionSlider,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QToolTip,
     QToolButton,
     QVBoxLayout,
@@ -706,8 +709,9 @@ class ReaderSidebar(QWidget):
             tabs_layout.addWidget(btn)
 
         self._stack = QStackedWidget(self)
-        self._toc_list = QListWidget()
-        self._toc_list.itemClicked.connect(self._on_toc_clicked)
+        self._toc_tree = QTreeWidget()
+        self._toc_tree.setHeaderHidden(True)
+        self._toc_tree.itemClicked.connect(self._on_toc_clicked)
 
         self._bm_list = QListWidget()
         self._bm_list.itemClicked.connect(lambda item: self._emit_annotation("bookmark", item))
@@ -737,7 +741,7 @@ class ReaderSidebar(QWidget):
         self._note_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._note_list.customContextMenuRequested.connect(lambda pos: self._delete_from_context("note", self._note_list, pos))
 
-        self._stack.addWidget(self._toc_list)
+        self._stack.addWidget(self._toc_tree)
         self._stack.addWidget(self._bm_list)
         self._stack.addWidget(self._hl_panel)
         self._stack.addWidget(self._note_list)
@@ -767,15 +771,47 @@ class ReaderSidebar(QWidget):
         self._stack.setCurrentIndex(index)
 
     def populate_toc(self, chapters: list[ChapterItem]):
-        self._toc_list.clear()
+        self._toc_tree.clear()
+        parent_map: dict[str, QTreeWidgetItem] = {}
+        part_title_re = re.compile(r"^(第[一二三四五六七八九十百千万0-9]+[部卷])$")
+        nested_re = re.compile(r"^(第[一二三四五六七八九十百千万0-9]+[部卷])\s+(.+)$")
+
         for idx, ch in enumerate(chapters):
-            item = QListWidgetItem(ch.title)
-            item.setData(Qt.ItemDataRole.UserRole, idx)
-            self._toc_list.addItem(item)
+            title = (ch.title or "").strip() or f"章节 {idx+1}"
+            m = nested_re.match(title)
+            if m:
+                parent_title = m.group(1)
+                child_title = m.group(2).strip() or title
+                parent_item = parent_map.get(parent_title)
+                if parent_item is None:
+                    parent_item = QTreeWidgetItem([parent_title])
+                    parent_item.setData(0, Qt.ItemDataRole.UserRole, None)
+                    self._toc_tree.addTopLevelItem(parent_item)
+                    parent_map[parent_title] = parent_item
+                child_item = QTreeWidgetItem([child_title])
+                child_item.setData(0, Qt.ItemDataRole.UserRole, idx)
+                parent_item.addChild(child_item)
+                continue
+
+            if part_title_re.match(title):
+                parent_item = parent_map.get(title)
+                if parent_item is None:
+                    parent_item = QTreeWidgetItem([title])
+                    self._toc_tree.addTopLevelItem(parent_item)
+                    parent_map[title] = parent_item
+                parent_item.setData(0, Qt.ItemDataRole.UserRole, idx)
+                continue
+
+            item = QTreeWidgetItem([title])
+            item.setData(0, Qt.ItemDataRole.UserRole, idx)
+            self._toc_tree.addTopLevelItem(item)
+
+        self._toc_tree.expandToDepth(0)
             
-    def _on_toc_clicked(self, item: QListWidgetItem):
-        idx = item.data(Qt.ItemDataRole.UserRole)
-        self.chapterSelected.emit(idx)
+    def _on_toc_clicked(self, item, _column: int = 0):
+        idx = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(idx, int):
+            self.chapterSelected.emit(idx)
 
     def populate_annotations(self, bookmarks: list[dict], highlights: list[dict], notes: list[dict]) -> None:
         self._fill_annotation_list(self._bm_list, bookmarks, "bookmark")
@@ -1080,6 +1116,13 @@ class ReaderView(QWidget):
         self._media_debug_enabled = os.environ.get("STONEREADER_MEDIA_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
         self._media_debug_path = Path(__file__).resolve().parents[3] / ".local" / "library" / "media_debug.log"
         self._media_debug_lines: list[str] = []
+        self._media_injection_timer = QTimer(self)
+        self._media_injection_timer.setInterval(10)
+        self._media_injection_timer.timeout.connect(self._process_media_injection_batch)
+        self._media_injection_queue: list[dict] = []
+        self._media_injection_total = 0
+        self._media_injection_done = 0
+        self._media_image_cache: dict[str, QImage] = {}
 
         # Layout Setup
         self.main_layout = QHBoxLayout(self)
@@ -1306,6 +1349,7 @@ class ReaderView(QWidget):
         self._sidebar.setVisible(not self._sidebar.isVisible())
 
     def _handle_back(self) -> None:
+        self._hide_transient_popups()
         snapshot = self.current_progress_snapshot()
         if snapshot is not None:
             self.progressChanged.emit(snapshot[0], snapshot[1])
@@ -1316,6 +1360,18 @@ class ReaderView(QWidget):
             self._sidebar.hide()
             return
         self.backRequested.emit()
+
+    def _hide_transient_popups(self) -> None:
+        if self._quick_bar is not None and self._quick_bar.isVisible():
+            self._quick_bar.hide()
+        if self._inline_note_editor is not None and self._inline_note_editor.isVisible():
+            self._inline_note_editor.hide()
+        if self._note_preview_popup is not None and self._note_preview_popup.isVisible():
+            self._note_preview_popup.hide()
+        if self._footnote_popup is not None and self._footnote_popup.isVisible():
+            self._footnote_popup.hide()
+        if self._media_popup is not None and self._media_popup.isVisible():
+            self._media_popup.hide()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1339,6 +1395,14 @@ class ReaderView(QWidget):
 
     def eventFilter(self, obj, event):
         if obj is self._text.viewport():
+            if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                gp = self._text.viewport().mapToGlobal(event.position().toPoint())
+                local = self.mapFromGlobal(gp)
+                hit_footnote = self._footnote_popup is not None and self._footnote_popup.isVisible() and self._footnote_popup.geometry().contains(local)
+                hit_media = self._media_popup is not None and self._media_popup.isVisible() and self._media_popup.geometry().contains(local)
+                hit_note = self._note_preview_popup is not None and self._note_preview_popup.isVisible() and self._note_preview_popup.geometry().contains(local)
+                if not (hit_footnote or hit_media or hit_note):
+                    self._hide_transient_popups()
             if event.type() == QEvent.Type.Wheel and self._visual_settings.reading_mode == "paginated":
                 if event.angleDelta().y() < 0:
                     self._go_next()
@@ -1388,14 +1452,27 @@ class ReaderView(QWidget):
                 num = m.group(1)
                 token = m.group(0)
                 break
-        if not token:
-            return False
 
         chapter_idx = self._current_chapter_idx
         if self._visual_settings.reading_mode == "full_scroll":
             chapter_idx = self._chapter_index_from_doc_pos(cp)
         chapter_idx = max(0, min(chapter_idx, len(self._chapters) - 1))
         ch = self._chapters[chapter_idx]
+
+        if not token:
+            # AZW3 常见：正文中是裸数字上标（非 [1] 形式）。
+            num_re = re.compile(r"(?<!\d)(\d{1,4})(?!\d)")
+            for m in num_re.finditer(snippet):
+                gs = left + m.start(1)
+                ge = left + m.end(1)
+                if gs <= cp <= ge:
+                    cand = m.group(1)
+                    if cand in ch.footnotes:
+                        num = cand
+                        token = f"[{cand}]"
+                        break
+        if not token:
+            return False
 
         key = (chapter_idx, token)
         note_text = ch.footnotes.get(token) or ch.footnotes.get(num)
@@ -1539,9 +1616,34 @@ class ReaderView(QWidget):
         self._page_animating = False
 
     def load_book(self, book: Book) -> None:
+        chapters = self.parse_book_file(book.file_path or "")
+        self.load_book_with_chapters(book, chapters)
+
+    @staticmethod
+    def parse_book_file(file_path: str, progress: Callable[[int, str], None] | None = None) -> list[ChapterItem]:
+        if not file_path:
+            return [ChapterItem("全文", "该书籍没有关联本地文件路径。")]
+
+        path = Path(file_path)
+        ext = path.suffix.lower()
+        if ext == ".txt":
+            content = ReaderView._read_txt_raw_static(path)
+            chapters = parse_txt(content)
+        elif ext == ".epub":
+            chapters = parse_epub(str(path), progress=progress)
+        elif ext in {".mobi", ".azw3"}:
+            chapters = parse_mobi(str(path), progress=progress)
+        else:
+            chapters = [ChapterItem("格式不支持", f"当前不支持 {ext} 格式解析。")]
+
+        ReaderView._format_chapters_static(chapters)
+        return chapters
+
+    def load_book_with_chapters(self, book: Book, chapters: list[ChapterItem]) -> None:
         self._loading_book = True
         try:
             self._clear_page_animation_overlays()
+            self._hide_transient_popups()
             self._book = book
             self._bookmarks = list(getattr(book, "bookmarks", []))
             self._highlights = list(getattr(book, "highlights", []))
@@ -1549,30 +1651,17 @@ class ReaderView(QWidget):
             self._set_header_text()
             self._text.clear()
 
-            if not book.file_path:
-                self._chapters = [ChapterItem("全文", "该书籍没有关联本地文件路径。")]
-                self._finish_load(book.read_progress)
-                return
-
-            path = Path(book.file_path)
-            ext = path.suffix.lower()
-            if ext == ".txt":
-                content = self._read_txt_raw(path)
-                self._chapters = parse_txt(content)
-            elif ext == ".epub":
-                self._chapters = parse_epub(str(path))
-            elif ext in {".mobi", ".azw3"}:
-                self._chapters = parse_mobi(str(path))
-            else:
-                self._chapters = [ChapterItem("格式不支持", f"当前不支持 {ext} 格式解析。")]
-
-            self._format_chapters(self._chapters)
+            self._chapters = chapters if chapters else [ChapterItem("全文", "未解析到可阅读内容。")]
             self._finish_load(book.read_progress)
         finally:
             self._loading_book = False
             self._update_progress_display(self._current_global_ratio())
 
     def _read_txt_raw(self, path: Path) -> str:
+        return self._read_txt_raw_static(path)
+
+    @staticmethod
+    def _read_txt_raw_static(path: Path) -> str:
         for encoding in ("utf-8", "utf-8-sig", "gb18030", "gbk"):
             try:
                 return path.read_text(encoding=encoding)
@@ -1583,6 +1672,10 @@ class ReaderView(QWidget):
         return "读取失败: 编码不受支持。"
 
     def _format_chapters(self, chapters: list[ChapterItem]):
+        self._format_chapters_static(chapters)
+
+    @staticmethod
+    def _format_chapters_static(chapters: list[ChapterItem]):
         """Light normalization while preserving parser-produced paragraph semantics."""
         for ch in chapters:
             lines = [line.rstrip() for line in ch.text.splitlines()]
@@ -1613,8 +1706,6 @@ class ReaderView(QWidget):
         self._current_chapter_idx = 0
         self._render_current_mode()
         self._pending_restore_ratio = min(max(saved_progress, 0.0), 1.0)
-        self._set_progress(saved_progress)
-        self._apply_visual_settings(self._visual_settings)
         QTimer.singleShot(0, self._apply_pending_restore_ratio)
 
     def _apply_pending_restore_ratio(self) -> None:
@@ -1695,8 +1786,9 @@ class ReaderView(QWidget):
                 break
             acc += w
 
-        self._current_chapter_idx = target_idx
-        self._render_current_mode()
+        if target_idx != self._current_chapter_idx:
+            self._current_chapter_idx = target_idx
+            self._render_current_mode()
         bar = self._text.verticalScrollBar()
         bar.setValue(int(round(intra_ratio * max(bar.maximum(), 1))))
         if mode == "paginated":
@@ -1789,6 +1881,9 @@ class ReaderView(QWidget):
         return body
 
     def _decode_data_url_image(self, data_url: str) -> QImage | None:
+        cached = self._media_image_cache.get(data_url)
+        if cached is not None:
+            return cached
         if not data_url.startswith("data:") or ";base64," not in data_url:
             self._media_debug_log("decode_fail: invalid_data_url_prefix_or_format")
             return None
@@ -1803,6 +1898,7 @@ class ReaderView(QWidget):
             self._media_debug_log("decode_fail: qimage_load_from_data_failed")
             return None
         self._media_debug_log(f"decode_ok: size={img.width()}x{img.height()} bytes={len(raw)}")
+        self._media_image_cache[data_url] = img
         return img
 
     def _collect_visible_media_entries(self) -> list[dict]:
@@ -1823,17 +1919,13 @@ class ReaderView(QWidget):
                     if not token or not data_url:
                         self._media_debug_log(f"collect_skip: token_or_data_missing token={token!r} has_data={bool(data_url)}")
                         continue
-                    img = self._decode_data_url_image(data_url)
-                    if img is None:
-                        self._media_debug_log(f"collect_skip: decode_none token={token!r}")
-                        continue
                     pos = doc_text.find(token, scan_pos)
                     if pos < 0:
                         pos = doc_text.find(token)
                     if pos < 0:
                         self._media_debug_log(f"collect_skip: token_not_found_in_doc token={token!r}")
                         continue
-                    entries.append({"token": token, "alt": alt, "image": img, "pos": pos})
+                    entries.append({"token": token, "alt": alt, "data_url": data_url, "pos": pos})
                     self._media_debug_log(f"collect_ok: token={token!r} pos={pos} alt={alt!r}")
                     scan_pos = pos + len(token)
             return entries
@@ -1851,70 +1943,136 @@ class ReaderView(QWidget):
             if not token or not data_url:
                 self._media_debug_log(f"collect_skip: token_or_data_missing token={token!r} has_data={bool(data_url)}")
                 continue
-            img = self._decode_data_url_image(data_url)
-            if img is None:
-                self._media_debug_log(f"collect_skip: decode_none token={token!r}")
-                continue
-            pos = doc_text.find(token, scan_pos)
+            text_pos = m.get("text_pos")
+            pos = -1
+            if isinstance(text_pos, int):
+                tpos = max(0, min(text_pos, max(0, len(doc_text) - len(token))))
+                if doc_text[tpos:tpos + len(token)] == token:
+                    pos = tpos
+            if pos < 0:
+                pos = doc_text.find(token, scan_pos)
             if pos < 0:
                 pos = doc_text.find(token)
             if pos < 0:
                 self._media_debug_log(f"collect_skip: token_not_found_in_doc token={token!r}")
                 continue
-            entries.append({"token": token, "alt": alt, "image": img, "pos": pos})
+            entries.append({"token": token, "alt": alt, "data_url": data_url, "pos": pos})
             self._media_debug_log(f"collect_ok: token={token!r} pos={pos} alt={alt!r}")
             scan_pos = pos + len(token)
         return entries
 
-    def _inject_inline_media(self) -> None:
-        entries = self._collect_visible_media_entries()
+    def _cancel_media_injection(self) -> None:
+        if self._media_injection_timer.isActive():
+            self._media_injection_timer.stop()
+        self._media_injection_queue = []
+        self._media_injection_total = 0
+        self._media_injection_done = 0
+
+    def _insert_media_entry(self, entry: dict) -> bool:
+        token = str(entry.get("token", ""))
+        alt = str(entry.get("alt", "")).strip()
+        data_url = str(entry.get("data_url", ""))
+        pos = int(entry.get("pos", -1))
+        if not token or pos < 0 or not data_url:
+            self._media_debug_log(f"inject_skip: bad_entry token={token!r} pos={pos} has_data={bool(data_url)}")
+            return False
+
+        img = self._decode_data_url_image(data_url)
+        if img is None:
+            self._media_debug_log(f"inject_skip: decode_none token={token!r} pos={pos}")
+            return False
+
+        inline = bool(entry.get("inline", False))
+
+        doc = self._text.document()
+        max_w = max(120, int(self._text.viewport().width() * 0.72))
+        start = max(0, min(pos, max(0, doc.characterCount() - 1)))
+        end = max(start, min(start + len(token), max(0, doc.characterCount() - 1)))
+        found = QTextCursor(doc)
+        found.setPosition(start)
+        found.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+
+        if found.selectedText() != token:
+            located = doc.find(token, start)
+            if located.isNull():
+                located = doc.find(token)
+            if located.isNull():
+                self._media_debug_log(f"inject_skip: token_not_found token={token!r} pos={pos}")
+                return False
+            found = located
+
+        name = f"inline-media-{hash((token, pos)) & 0xfffffff}"
+        doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(name), img)
+
+        fmt = QTextImageFormat()
+        fmt.setName(name)
+        if inline:
+            base_h = max(14, int(self._visual_settings.font_size * 1.35))
+            h = base_h
+            w = int(h * img.width() / img.height()) if img.height() > 0 else h
+            w = max(base_h, min(base_h * 4, w))
+            fmt.setWidth(float(w))
+            fmt.setHeight(float(h))
+            found.insertImage(fmt)
+            self._media_debug_log(
+                f"inject_ok_inline: token={token!r} pos={pos} img={img.width()}x{img.height()} render={w}x{h}"
+            )
+        else:
+            w = min(max_w, img.width())
+            h = int(w * img.height() / img.width()) if img.width() > 0 else 100
+            fmt.setWidth(float(max(80, w)))
+            fmt.setHeight(float(max(50, h)))
+            found.insertText("\n")
+            found.insertImage(fmt)
+            if alt:
+                found.insertText(f"\n{alt}")
+            found.insertText("\n")
+            self._media_debug_log(f"inject_ok: token={token!r} pos={pos} img={img.width()}x{img.height()} alt={alt!r}")
+        return True
+
+    def _process_media_injection_batch(self) -> None:
+        if not self._media_injection_queue:
+            if self._media_injection_timer.isActive():
+                self._media_injection_timer.stop()
+            remaining_tokens = re.findall(r"\[图\d{1,4}\]", self._text.toPlainText())
+            self._media_debug_log(
+                f"inject_summary: replaced={self._media_injection_done} remaining_tokens={sorted(set(remaining_tokens))}"
+            )
+            self._update_progress_display(self._current_global_ratio())
+            return
+
+        batch_size = 2
+        for _ in range(batch_size):
+            if not self._media_injection_queue:
+                break
+            entry = self._media_injection_queue.pop(0)
+            if self._insert_media_entry(entry):
+                self._media_injection_done += 1
+
+        self._update_progress_display(self._current_global_ratio())
+
+    def _start_media_injection(self, entries: list[dict]) -> None:
+        self._cancel_media_injection()
         if not entries:
             remaining_tokens = re.findall(r"\[图\d{1,4}\]", self._text.toPlainText())
             if remaining_tokens:
                 self._media_debug_log(
                     f"inject_none: no_resolved_entries remaining_tokens={sorted(set(remaining_tokens))}"
                 )
+            self._update_progress_display(self._current_global_ratio())
             return
-        doc = self._text.document()
-        max_w = max(120, int(self._text.viewport().width() * 0.72))
-        replaced = 0
-        for idx, entry in enumerate(sorted(entries, key=lambda x: int(x.get("pos", -1)), reverse=True)):
-            token = str(entry.get("token", ""))
-            alt = str(entry.get("alt", "")).strip()
-            img = entry.get("image")
-            pos = int(entry.get("pos", -1))
-            if not token or img is None or pos < 0:
-                self._media_debug_log(f"inject_skip: bad_entry token={token!r} pos={pos}")
-                continue
 
-            start = max(0, min(pos, max(0, doc.characterCount() - 1)))
-            end = max(start, min(start + len(token), max(0, doc.characterCount() - 1)))
-            found = QTextCursor(doc)
-            found.setPosition(start)
-            found.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        self._media_injection_queue = sorted(entries, key=lambda x: int(x.get("pos", -1)), reverse=True)
+        self._media_injection_total = len(self._media_injection_queue)
+        self._media_injection_done = 0
+        self._media_debug_log(f"inject_start: total={self._media_injection_total}")
+        self._process_media_injection_batch()
+        if self._media_injection_queue:
+            self._media_injection_timer.start()
 
-            name = f"inline-media-{idx}-{hash((token, pos)) & 0xfffffff}"
-            doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(name), img)
-
-            fmt = QTextImageFormat()
-            fmt.setName(name)
-            w = min(max_w, img.width())
-            h = int(w * img.height() / img.width()) if img.width() > 0 else 100
-            fmt.setWidth(float(max(80, w)))
-            fmt.setHeight(float(max(50, h)))
-
-            found.insertText("\n")
-            found.insertImage(fmt)
-            if alt:
-                found.insertText(f"\n{alt}")
-            found.insertText("\n")
-            replaced += 1
-            self._media_debug_log(f"inject_ok: token={token!r} pos={pos} img={img.width()}x{img.height()} alt={alt!r}")
-
-        remaining_tokens = re.findall(r"\[图\d{1,4}\]", self._text.toPlainText())
-        self._media_debug_log(
-            f"inject_summary: replaced={replaced} remaining_tokens={sorted(set(remaining_tokens))}"
-        )
+    def _inject_inline_media(self) -> None:
+        entries = self._collect_visible_media_entries()
+        self._start_media_injection(entries)
 
     def _reset_text_char_format_state(self) -> None:
         doc = self._text.document()
@@ -2144,6 +2302,7 @@ class ReaderView(QWidget):
         """Update QTextEdit based on mode vs chapters state."""
         mode = self._visual_settings.reading_mode
         self._clear_page_animation_overlays()
+        self._cancel_media_injection()
         self._btn_prev_area.setVisible(mode != "full_scroll")
         self._btn_next_area.setVisible(mode != "full_scroll")
         
@@ -2310,7 +2469,10 @@ class ReaderView(QWidget):
             return
 
         ch = self._chapters[max(0, min(self._current_chapter_idx, len(self._chapters) - 1))]
-        txt = f"{ch.title} | 全书 {int(ratio * 100)}%"
+        media_suffix = ""
+        if self._media_injection_total > 0:
+            media_suffix = f" | 媒体 {self._media_injection_done}/{self._media_injection_total}"
+        txt = f"{ch.title} | 全书 {int(ratio * 100)}%{media_suffix}"
         self._set_header_text(ch.title)
 
         self._progress_label.setText(txt)

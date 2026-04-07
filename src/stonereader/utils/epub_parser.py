@@ -3,6 +3,7 @@
 import zipfile
 import urllib.parse
 import posixpath
+from typing import Callable
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
 import re
@@ -337,7 +338,7 @@ def get_namespace(tag: str) -> str:
         return tag.split('}')[0] + '}'
     return ''
 
-def parse_epub(file_path: str) -> list[ChapterItem]:
+def parse_epub(file_path: str, progress: Callable[[int, str], None] | None = None) -> list[ChapterItem]:
     """Parse EPUB manually (via zip and XML) to avoid ebooklib's getchildren errors and ensure correct content order using the underlying spine."""
     chapters = []
     try:
@@ -407,7 +408,10 @@ def parse_epub(file_path: str) -> list[ChapterItem]:
                     pass
 
             # 4. READ FILES IN SPINE ORDER
-            for idref in spine:
+            total_spine = max(1, len(spine))
+            for idx, idref in enumerate(spine):
+                if progress is not None:
+                    progress(int(idx * 100 / total_spine), f"正在解析章节 {idx + 1}/{total_spine}")
                 if idref not in manifest: 
                     continue
                 href = manifest[idref]
@@ -461,6 +465,8 @@ def parse_epub(file_path: str) -> list[ChapterItem]:
                         inline_styles=inline_styles,
                     )
                 )
+            if progress is not None:
+                progress(100, "章节解析完成")
                 
     except Exception as exc:
         import traceback

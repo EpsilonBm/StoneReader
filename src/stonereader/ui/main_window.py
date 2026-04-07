@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import traceback
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QIcon, QCloseEvent
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QProgressDialog,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
@@ -27,6 +29,27 @@ from ..utils.screen import detect_ui_scale
 from .bookshelf_view import BookshelfView
 from .reader_view import ReaderView
 from .sidebar import Sidebar
+
+
+class _BackgroundWorker(QObject):
+    progressChanged = pyqtSignal(int, str)
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, job) -> None:
+        super().__init__()
+        self._job = job
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            def _report(value: int, message: str = "") -> None:
+                self.progressChanged.emit(int(value), message)
+
+            result = self._job(_report)
+            self.finished.emit(result)
+        except Exception:
+            self.failed.emit(traceback.format_exc())
 
 
 class ToastMessage(QLabel):
@@ -72,12 +95,15 @@ class MainWindow(QMainWindow):
         self._scope = "shelf"
         self._selected_tag = ""
         self._ui_scale = detect_ui_scale()
+        self._busy_dialog: QProgressDialog | None = None
+        self._active_thread: QThread | None = None
+        self._active_worker: _BackgroundWorker | None = None
 
         self.resize(int(self._ui_scale.width * 0.82), int(self._ui_scale.height * 0.84))
         self.setMinimumSize(980, 620)
         self._build_ui()
-        self._reload_books()
         self._apply_style()
+        QTimer.singleShot(0, self._initial_load_bookshelf)
 
     @staticmethod
     def _icon_path(name: str) -> str:
@@ -178,6 +204,81 @@ class MainWindow(QMainWindow):
         self._selected_tag = tag
         self._reload_books()
 
+    def _initial_load_bookshelf(self) -> None:
+        self._reload_books_async("正在加载书架…")
+
+    def _show_busy_dialog(self, title: str, label: str) -> None:
+        if self._busy_dialog is not None:
+            self._busy_dialog.close()
+            self._busy_dialog.deleteLater()
+            self._busy_dialog = None
+
+        dlg = QProgressDialog(label, "", 0, 100, self)
+        dlg.setWindowTitle(title)
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setCancelButton(None)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        dlg.show()
+        self._busy_dialog = dlg
+
+    def _update_busy_dialog(self, value: int, label: str = "") -> None:
+        if self._busy_dialog is None:
+            return
+        if label:
+            self._busy_dialog.setLabelText(label)
+        self._busy_dialog.setValue(max(0, min(100, int(value))))
+
+    def _close_busy_dialog(self) -> None:
+        if self._busy_dialog is None:
+            return
+        self._busy_dialog.setValue(100)
+        self._busy_dialog.close()
+        self._busy_dialog.deleteLater()
+        self._busy_dialog = None
+
+    def _run_background_task(self, title: str, label: str, job, on_done) -> None:
+        if self._active_thread is not None:
+            QMessageBox.information(self, "请稍候", "当前仍有后台任务在运行，请稍后再试。")
+            return
+
+        self._show_busy_dialog(title, label)
+
+        thread = QThread(self)
+        worker = _BackgroundWorker(job)
+        worker.moveToThread(thread)
+
+        self._active_thread = thread
+        self._active_worker = worker
+
+        thread.started.connect(worker.run)
+        worker.progressChanged.connect(self._update_busy_dialog)
+
+        def _cleanup() -> None:
+            self._close_busy_dialog()
+            if self._active_thread is not None:
+                self._active_thread.quit()
+                self._active_thread.wait(1000)
+                self._active_thread.deleteLater()
+            if self._active_worker is not None:
+                self._active_worker.deleteLater()
+            self._active_thread = None
+            self._active_worker = None
+
+        def _on_finished(result) -> None:
+            _cleanup()
+            on_done(result)
+
+        def _on_failed(tb: str) -> None:
+            _cleanup()
+            QMessageBox.critical(self, "任务失败", f"执行后台任务时发生错误：\n\n{tb}")
+
+        worker.finished.connect(_on_finished)
+        worker.failed.connect(_on_failed)
+        thread.start()
+
     def _reload_books(self) -> None:
         sort_map = {
             0: "reading",
@@ -191,6 +292,28 @@ class MainWindow(QMainWindow):
             selected_tag=self._selected_tag,
         )
         self._bookshelf.populate(books, show_add=self._scope == "shelf")
+
+    def _reload_books_async(self, label: str) -> None:
+        sort_map = {
+            0: "reading",
+            1: "added",
+            2: "title",
+            3: "author",
+        }
+        scope = self._scope
+        selected_tag = self._selected_tag
+        sort_by = sort_map.get(self._sort_combo.currentIndex(), "title")
+
+        def _job(report):
+            report(10, "正在读取本地图书索引…")
+            books = self._library.query(scope=scope, sort_by=sort_by, selected_tag=selected_tag)
+            report(80, "正在整理书架视图…")
+            return books
+
+        def _done(books) -> None:
+            self._bookshelf.populate(books, show_add=self._scope == "shelf")
+
+        self._run_background_task("StoneReader", label, _job, _done)
 
     def _toggle_view_mode(self) -> None:
         self._bookshelf.toggle_mode()
@@ -230,8 +353,27 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "打开失败", "未找到书籍记录。")
             return
 
-        self._reader.load_book(book)
-        self._stack.setCurrentWidget(self._reader)
+        def _job(report):
+            report(5, "正在读取书籍信息…")
+            report(10, "正在初始化解析器…")
+
+            def _parse_progress(pct: int, message: str) -> None:
+                mapped = 10 + int(max(0, min(100, pct)) * 0.78)
+                report(mapped, message or "正在解析正文内容…")
+
+            chapters = ReaderView.parse_book_file(book.file_path or "", progress=_parse_progress)
+            report(92, "正在构建阅读视图…")
+            return chapters
+
+        def _done(chapters) -> None:
+            fresh = self._library.get_by_path(file_path)
+            if fresh is None:
+                QMessageBox.warning(self, "打开失败", "书籍记录在加载期间发生变化。")
+                return
+            self._reader.load_book_with_chapters(fresh, chapters)
+            self._stack.setCurrentWidget(self._reader)
+
+        self._run_background_task("打开书籍", f"正在打开《{book.title}》…", _job, _done)
 
     def _back_to_shelf(self) -> None:
         self._reload_books()
