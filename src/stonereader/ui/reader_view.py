@@ -1381,7 +1381,7 @@ class ReaderView(QWidget):
 
         token = ""
         num = ""
-        for m in re.finditer(r"\[(\d{1,4})\]", snippet):
+        for m in re.finditer(r"\[([^\[\]\s]{1,32})\]", snippet):
             gs = left + m.start()
             ge = left + m.end()
             if gs <= cp <= ge:
@@ -1495,8 +1495,7 @@ class ReaderView(QWidget):
     def _chapter_index_from_doc_pos(self, doc_pos: int) -> int:
         offset = 0
         for i, ch in enumerate(self._chapters):
-            head = len(f"【 {ch.title} 】\n")
-            start = offset + head
+            start = offset
             end = start + len(ch.text)
             if start <= doc_pos <= end:
                 return i
@@ -1787,8 +1786,6 @@ class ReaderView(QWidget):
         chapter_idx, start, end, is_first = self._paginated_pages[page_idx]
         ch = self._chapters[chapter_idx]
         body = (ch.text or "")[start:end]
-        if is_first:
-            return f"【 {ch.title} 】\n\n{body}"
         return body
 
     def _decode_data_url_image(self, data_url: str) -> QImage | None:
@@ -1947,6 +1944,85 @@ class ReaderView(QWidget):
             c.mergeCharFormat(fmt)
         self._reset_text_char_format_state()
 
+    def _apply_inline_styles_to_view(self) -> None:
+        if not self._chapters:
+            return
+        doc = self._text.document()
+        if doc is None:
+            return
+
+        mode = self._visual_settings.reading_mode
+        mappings: list[tuple[int, int, dict]] = []
+
+        if mode == "full_scroll":
+            offset = 0
+            for i, ch in enumerate(self._chapters):
+                body_base = offset
+                for span in ch.inline_styles:
+                    start = int(span.get("start", 0))
+                    end = int(span.get("end", start))
+                    if end > start:
+                        mappings.append((body_base + start, body_base + end, span))
+                offset = body_base + len(ch.text)
+                if i < len(self._chapters) - 1:
+                    offset += 3
+        elif mode == "chapter_scroll":
+            ch = self._chapters[self._current_chapter_idx]
+            body_base = 0
+            for span in ch.inline_styles:
+                start = int(span.get("start", 0))
+                end = int(span.get("end", start))
+                if end > start:
+                    mappings.append((body_base + start, body_base + end, span))
+        elif mode == "paginated" and self._paginated_pages:
+            chapter_idx, slice_start, slice_end, is_first = self._paginated_pages[self._paginated_current_page]
+            ch = self._chapters[chapter_idx]
+            body_base = 0
+            for span in ch.inline_styles:
+                start = int(span.get("start", 0))
+                end = int(span.get("end", start))
+                if end <= start:
+                    continue
+                if end <= slice_start or start >= slice_end:
+                    continue
+                mapped_start = body_base + max(0, start - slice_start)
+                mapped_end = body_base + min(slice_end - slice_start, end - slice_start)
+                if mapped_end > mapped_start:
+                    mappings.append((mapped_start, mapped_end, span))
+
+        doc_len = max(0, doc.characterCount() - 1)
+        base_size = max(10, int(self._visual_settings.font_size))
+        for start, end, span in mappings:
+            s = max(0, min(start, doc_len))
+            e = max(s + 1, min(end, doc_len))
+            if e <= s:
+                continue
+            fmt = QTextCharFormat()
+            if bool(span.get("bold", False)):
+                fmt.setFontWeight(QFont.Weight.Bold)
+            if bool(span.get("italic", False)):
+                fmt.setFontItalic(True)
+            if bool(span.get("underline", False)):
+                fmt.setFontUnderline(True)
+            if bool(span.get("strike", False)):
+                fmt.setFontStrikeOut(True)
+            size_factor = float(span.get("size_factor", 1.0))
+            if abs(size_factor - 1.0) > 0.01:
+                fmt.setFontPointSize(max(8.0, base_size * size_factor))
+            color = str(span.get("color", "") or "").strip()
+            if color:
+                fmt.setForeground(QColor(color))
+            bg = str(span.get("background", "") or "").strip()
+            if bg:
+                fmt.setBackground(QColor(bg))
+            if bool(span.get("monospace", False)):
+                mono = QFont("Consolas")
+                fmt.setFontFamilies([mono.family(), "Courier New"])
+            cur = QTextCursor(doc)
+            cur.setPosition(s)
+            cur.setPosition(e, QTextCursor.MoveMode.KeepAnchor)
+            cur.mergeCharFormat(fmt)
+
     def _play_page_flip_animation(self, old_pix: QPixmap, new_pix: QPixmap, direction: int) -> None:
         viewport = self._text.viewport()
         self._clear_page_animation_overlays()
@@ -2010,6 +2086,7 @@ class ReaderView(QWidget):
         self._reset_text_char_format_state()
         self._text.setPlainText(text)
         self._apply_text_metrics()
+        self._apply_inline_styles_to_view()
         self._inject_inline_media()
         self._style_jumpable_tokens()
         self._text.verticalScrollBar().setValue(0)
@@ -2072,21 +2149,23 @@ class ReaderView(QWidget):
         
         if mode == "full_scroll":
             # Combine all texts
-            full_text = "\n\n\n".join([f"【 {ch.title} 】\n{ch.text}" for ch in self._chapters])
+            full_text = "\n\n\n".join([ch.text for ch in self._chapters])
             self._reset_text_char_format_state()
             self._text.setPlainText(full_text)
             self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             self._apply_text_metrics()
+            self._apply_inline_styles_to_view()
             self._inject_inline_media()
             self._style_jumpable_tokens()
         elif mode == "chapter_scroll":
             # Single chapter or Paginated load just the current chapter
             ch = self._chapters[self._current_chapter_idx]
             self._reset_text_char_format_state()
-            self._text.setPlainText(f"【 {ch.title} 】\n\n{ch.text}")
+            self._text.setPlainText(ch.text)
 
             self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             self._apply_text_metrics()
+            self._apply_inline_styles_to_view()
             self._inject_inline_media()
             self._style_jumpable_tokens()
         else:
@@ -2136,7 +2215,7 @@ class ReaderView(QWidget):
         mode = self._visual_settings.reading_mode
         if mode == "full_scroll":
             from PyQt6.QtCore import QTimer
-            target_str = "\n\n\n".join([f"【 {ch.title} 】\n{ch.text}" for ch in self._chapters[:index]])
+            target_str = "\n\n\n".join([ch.text for ch in self._chapters[:index]])
             pos = len(target_str)
             if index > 0: pos += 3
             cursor = self._text.textCursor()
@@ -2397,7 +2476,7 @@ class ReaderView(QWidget):
             chapter_idx = 0
             local_pos = 0
             for i, ch in enumerate(self._chapters):
-                start = offset + len(f"【 {ch.title} 】\n")
+                start = offset
                 end = start + len(ch.text)
                 if start <= pos <= end:
                     chapter_idx = i
@@ -2406,8 +2485,7 @@ class ReaderView(QWidget):
                 offset = end + (3 if i < len(self._chapters) - 1 else 0)
         else:
             chapter_idx = current_chapter
-            head = len(f"【 {self._chapters[chapter_idx].title} 】\n\n") if self._chapters else 0
-            local_pos = max(0, cursor.position() - head)
+            local_pos = max(0, cursor.position())
 
         best_idx = None
         best_dist = 10**9
@@ -2439,8 +2517,7 @@ class ReaderView(QWidget):
             ranges: list[tuple[int, int]] = []
             offset = 0
             for i, ch in enumerate(self._chapters):
-                head_len = len(f"【 {ch.title} 】\n")
-                start = offset + head_len
+                start = offset
                 end = start + len(ch.text)
                 ranges.append((start, end))
                 offset = end + (3 if i < len(self._chapters) - 1 else 0)
@@ -2453,8 +2530,7 @@ class ReaderView(QWidget):
             else:
                 local_start = 0
         else:
-            head_len = len(f"【 {chapter_title} 】\n\n")
-            local_start = max(0, cursor.selectionStart() - head_len)
+            local_start = max(0, cursor.selectionStart())
 
         return {
             "chapter_index": chapter_idx,
@@ -2654,7 +2730,6 @@ class ReaderView(QWidget):
         if mode == "full_scroll":
             offset = 0
             for i, ch in enumerate(self._chapters):
-                offset += len(f"【 {ch.title} 】\n")
                 if i == chapter_idx:
                     return (offset + local_start, length)
                 offset += len(ch.text)
@@ -2664,7 +2739,7 @@ class ReaderView(QWidget):
 
         if chapter_idx != self._current_chapter_idx:
             return None
-        base = len(f"【 {self._chapters[chapter_idx].title} 】\n\n")
+        base = 0
         return (base + local_start, length)
 
     def _add_marker_widget(self, doc_pos: int, has_bookmark: bool, notes: list[str]) -> None:

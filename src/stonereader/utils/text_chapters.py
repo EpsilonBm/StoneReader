@@ -17,6 +17,7 @@ class ChapterItem:
     text: str
     footnotes: dict[str, str] = field(default_factory=dict)
     media: list[dict] = field(default_factory=list)
+    inline_styles: list[dict] = field(default_factory=list)
 
 _CHAPTER_PATTERNS = [
     re.compile(r"^\s*第[零一二三四五六七八九十百千万0-9]+[章节回卷部篇集].*$"),
