@@ -18,6 +18,9 @@ from .text_chapters import ChapterItem, parse_txt
 
 _BLOCK_TAGS = {
     "p",
+    "div",
+    "section",
+    "figure",
     "h1",
     "h2",
     "h3",
@@ -212,7 +215,10 @@ def _collect_mobi_footnotes(
         cross_file = bool(href_file and href_file != html_name.lower())
         has_local_target = target_id in id_nodes
         global_key = f"{href_file}#{target_id.lower()}" if href_file else f"#{target_id.lower()}"
-        has_global_target = bool(global_note_targets and (global_key in global_note_targets or f"#{target_id.lower()}" in global_note_targets))
+        if href_file:
+            has_global_target = bool(global_note_targets and (global_key in global_note_targets))
+        else:
+            has_global_target = bool(global_note_targets and (f"#{target_id.lower()}" in global_note_targets))
         if not has_local_target and not has_global_target:
             continue
         label = _extract_node_text(a)
@@ -275,10 +281,10 @@ def _collect_mobi_footnotes(
             note_text = _extract_node_text(note_node)
 
         if not note_text and global_note_targets:
-            note_text = (
-                global_note_targets.get(global_key, "")
-                or global_note_targets.get(f"#{target_id.lower()}", "")
-            )
+            if href_file:
+                note_text = global_note_targets.get(global_key, "")
+            else:
+                note_text = global_note_targets.get(f"#{target_id.lower()}", "")
         if not note_text:
             continue
         if not cross_file and not _note_text_matches_token(note_text, num, token) and len(note_text) > 120:
@@ -777,6 +783,15 @@ def _split_by_ncx_anchors(
     token_re = re.compile(r"\[图\d{1,4}\]")
     media_by_token = {str(m.get("token", "")): m for m in media}
 
+    def _clone_media_for_chunk(src_media: dict, chunk_start: int) -> dict:
+        cloned = dict(src_media)
+        m_pos = src_media.get("text_pos")
+        if isinstance(m_pos, int):
+            cloned["text_pos"] = max(0, m_pos - chunk_start)
+        else:
+            cloned.pop("text_pos", None)
+        return cloned
+
     out: list[ChapterItem] = []
     assigned: set[str] = set()
     current_part = ""
@@ -809,7 +824,7 @@ def _split_by_ncx_anchors(
                 if mid in seen_ids:
                     continue
                 seen_ids.add(mid)
-                local_media.append(m)
+                local_media.append(_clone_media_for_chunk(m, start))
                 tk = str(m.get("token", "")).strip()
                 if tk:
                     assigned.add(tk)
@@ -822,7 +837,7 @@ def _split_by_ncx_anchors(
                 seen.add(tk)
                 m = media_by_token.get(tk)
                 if m is not None:
-                    local_media.append(m)
+                    local_media.append(_clone_media_for_chunk(m, start))
                     assigned.add(tk)
 
         out.append(
@@ -845,7 +860,7 @@ def _split_by_ncx_anchors(
         for m in remaining:
             m_pos = m.get("text_pos")
             if not isinstance(m_pos, int):
-                out[0].media.append(m)
+                out[0].media.append(_clone_media_for_chunk(m, 0))
                 continue
             target_idx = 0
             for i2, st in enumerate(starts):
@@ -854,7 +869,7 @@ def _split_by_ncx_anchors(
                 else:
                     break
             target_idx = max(0, min(target_idx, len(out) - 1))
-            out[target_idx].media.append(m)
+            out[target_idx].media.append(_clone_media_for_chunk(m, starts[target_idx]))
     return out
 
 
@@ -1105,9 +1120,18 @@ def _merge_unknown_bridge_chapters(chapters: list[ChapterItem]) -> list[ChapterI
             and len(ch.text.strip()) >= 600
         ):
             prev = merged[-1]
-            prev.text = (prev.text.rstrip() + "\n\n" + ch.text.lstrip()).strip()
+            prev_old = prev.text or ""
+            prev.text = (prev_old.rstrip() + "\n\n" + ch.text.lstrip()).strip()
             if ch.media:
-                prev.media.extend(ch.media)
+                base_shift = len(prev_old.rstrip())
+                if base_shift > 0:
+                    base_shift += 2
+                for m in ch.media:
+                    cloned = dict(m)
+                    m_pos = m.get("text_pos")
+                    if isinstance(m_pos, int):
+                        cloned["text_pos"] = m_pos + base_shift
+                    prev.media.append(cloned)
             if ch.footnotes:
                 prev.footnotes.update(ch.footnotes)
             if ch.inline_styles:
@@ -1130,7 +1154,8 @@ def _ensure_media_tokens_in_text(chapters: list[ChapterItem]) -> None:
             if token not in text and token not in appended:
                 appended.append(token)
         if appended:
-            ch.text = ("\n".join(appended) + "\n\n" + text.lstrip()).strip()
+            # 缺失token属兜底场景，追加到末尾避免干扰正文原始顺序定位。
+            ch.text = (text.rstrip() + "\n\n" + "\n".join(appended)).strip()
 
 
 def _normalize_media_tokens(chapters: list[ChapterItem]) -> None:
@@ -1190,6 +1215,17 @@ def _prune_duplicate_cover_chapters(chapters: list[ChapterItem]) -> list[Chapter
     return out
 
 
+def _drop_empty_cover_chapters(chapters: list[ChapterItem]) -> list[ChapterItem]:
+    out: list[ChapterItem] = []
+    for ch in chapters:
+        t = (ch.title or "").strip().lower()
+        body = (ch.text or "").strip().lower()
+        if t == "cover" and not ch.media and body in {"", "cover", "封面"}:
+            continue
+        out.append(ch)
+    return out
+
+
 def _rebuild_media_text_positions(chapters: list[ChapterItem]) -> None:
     for ch in chapters:
         if not ch.media:
@@ -1226,7 +1262,7 @@ def parse_mobi(file_path: str, progress: Callable[[int, str], None] | None = Non
         root = Path(unpack_root)
         toc_map = _parse_toc_map(root)
         navpoints = _parse_ncx_navpoints(root)
-        book_html_candidate = next((p for p in root.rglob("book.html")), None)
+        # 不再强制注入 synthetic cover，避免封面错图干扰正文阅读。
 
         spine_html_files = _parse_spine_html_files(root)
         html_files = spine_html_files if spine_html_files else sorted(
@@ -1250,18 +1286,14 @@ def parse_mobi(file_path: str, progress: Callable[[int, str], None] | None = Non
             if len(part_files) >= 3:
                 html_files = part_files
 
-        cover_chapter: ChapterItem | None = None
+        toc_names: set[str] = set(toc_map.keys()) if toc_map else set()
+        toc_trusted = False
 
         if toc_map:
-            toc_names = set(toc_map.keys())
             matched = [p for p in html_files if p.name.lower() in toc_names]
             if len(matched) >= max(3, len(html_files) // 3):
+                toc_trusted = True
                 skipped = [p for p in html_files if p not in matched]
-                book_html = next((p for p in skipped if p.name.lower() == "book.html"), None)
-                if book_html is not None:
-                    cover_media = _extract_cover_media_from_html(book_html)
-                    if cover_media:
-                        cover_chapter = ChapterItem("Cover", "[图1]", media=cover_media)
                 lightweight_front: list[Path] = []
                 for sp in skipped:
                     try:
@@ -1270,19 +1302,11 @@ def parse_mobi(file_path: str, progress: Callable[[int, str], None] | None = Non
                         text_len = len(_normalize_whitespace(soup.get_text(" ", strip=True)))
                     except Exception:
                         continue
-                    if img_count > 0 and text_len < 300:
+                    if img_count > 0 and text_len < 80:
                         lightweight_front.append(sp)
                 html_files = lightweight_front + matched
 
-        if cover_chapter is None and book_html_candidate is not None:
-            cover_media = _extract_cover_media_from_html(book_html_candidate)
-            if cover_media:
-                cover_chapter = ChapterItem("Cover", "[图1]", media=cover_media)
-
         global_note_targets = _build_global_note_targets(root, html_files)
-
-        if cover_chapter is not None:
-            chapters.append(cover_chapter)
 
         if html_files:
             total_files = max(1, len(html_files))
@@ -1296,6 +1320,10 @@ def parse_mobi(file_path: str, progress: Callable[[int, str], None] | None = Non
                     global_note_targets=global_note_targets,
                 )
                 if not text.strip():
+                    continue
+
+                if toc_trusted and p.name.lower() not in toc_names and re.fullmatch(r"part\d+", p.stem.lower()):
+                    # TOC可信时，跳过未收录part噪声页（常见于转换残留封页/空白页）。
                     continue
 
                 # Prefer TOC-anchor driven split for single-html books (generic and stable).
@@ -1405,6 +1433,7 @@ def parse_mobi(file_path: str, progress: Callable[[int, str], None] | None = Non
             cursor = max(end + 2, cursor + 1)
     chapters = protected
     chapters = _prune_duplicate_cover_chapters(chapters)
+    chapters = _drop_empty_cover_chapters(chapters)
 
     chapters = _merge_unknown_bridge_chapters(chapters)
     _normalize_media_tokens(chapters)

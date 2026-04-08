@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSpinBox,
     QStackedWidget,
+    QSplitter,
     QStyle,
     QStyleOptionSlider,
     QTextEdit,
@@ -675,7 +676,8 @@ class ReaderSidebar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("ReaderSidebar")
-        self.setMaximumWidth(260)
+        self.setMinimumWidth(180)
+        self.setMaximumWidth(600)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -773,8 +775,19 @@ class ReaderSidebar(QWidget):
     def populate_toc(self, chapters: list[ChapterItem]):
         self._toc_tree.clear()
         parent_map: dict[str, QTreeWidgetItem] = {}
-        part_title_re = re.compile(r"^(第[一二三四五六七八九十百千万0-9]+[部卷])$")
-        nested_re = re.compile(r"^(第[一二三四五六七八九十百千万0-9]+[部卷])\s+(.+)$")
+        part_title_re = re.compile(r"^(第[一二三四五六七八九十百千万0-9]+[篇部卷编])$")
+        nested_re = re.compile(r"^(第[一二三四五六七八九十百千万0-9]+[篇部卷编])\s+(.+)$")
+        major_re = re.compile(r"^第[一二三四五六七八九十百千万0-9]+([篇部卷编章])")
+        section_re = re.compile(r"^第[一二三四五六七八九十百千万0-9]+([节回])")
+
+        current_parent_item: QTreeWidgetItem | None = None
+        current_parent_unit: str | None = None
+
+        def _add_top_level(text: str, chapter_idx: int | None) -> QTreeWidgetItem:
+            item = QTreeWidgetItem([text])
+            item.setData(0, Qt.ItemDataRole.UserRole, chapter_idx)
+            self._toc_tree.addTopLevelItem(item)
+            return item
 
         for idx, ch in enumerate(chapters):
             title = (ch.title or "").strip() or f"章节 {idx+1}"
@@ -796,15 +809,45 @@ class ReaderSidebar(QWidget):
             if part_title_re.match(title):
                 parent_item = parent_map.get(title)
                 if parent_item is None:
-                    parent_item = QTreeWidgetItem([title])
-                    self._toc_tree.addTopLevelItem(parent_item)
+                    parent_item = _add_top_level(title, idx)
                     parent_map[title] = parent_item
                 parent_item.setData(0, Qt.ItemDataRole.UserRole, idx)
+                current_parent_item = parent_item
+                current_parent_unit = "part"
                 continue
 
-            item = QTreeWidgetItem([title])
-            item.setData(0, Qt.ItemDataRole.UserRole, idx)
-            self._toc_tree.addTopLevelItem(item)
+            major_m = major_re.match(title)
+            sec_m = section_re.match(title)
+
+            if major_m:
+                unit = major_m.group(1)
+                if current_parent_item is not None and current_parent_unit == "part" and unit == "章":
+                    item = QTreeWidgetItem([title])
+                    item.setData(0, Qt.ItemDataRole.UserRole, idx)
+                    current_parent_item.addChild(item)
+                    continue
+
+                item = _add_top_level(title, idx)
+                if unit == "章":
+                    current_parent_item = item
+                    current_parent_unit = "chapter"
+                elif unit in {"篇", "部", "卷", "编"}:
+                    current_parent_item = item
+                    current_parent_unit = "part"
+                else:
+                    current_parent_item = None
+                    current_parent_unit = None
+                continue
+
+            if sec_m and current_parent_item is not None and current_parent_unit in {"chapter", "part"}:
+                item = QTreeWidgetItem([title])
+                item.setData(0, Qt.ItemDataRole.UserRole, idx)
+                current_parent_item.addChild(item)
+                continue
+
+            item = _add_top_level(title, idx)
+            current_parent_item = None
+            current_parent_unit = None
 
         self._toc_tree.expandToDepth(0)
             
@@ -1303,9 +1346,16 @@ class ReaderView(QWidget):
         self._footnote_popup.jumpRequested.connect(self._jump_to_footnote_content)
         self._media_popup = MediaPreviewPopup(self)
 
-        self.main_layout.addWidget(self._sidebar, 0)
-        self.main_layout.addWidget(self.reading_area, 1)
-        self.main_layout.addWidget(self._settings_panel, 0)
+        self._main_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self._main_splitter.setChildrenCollapsible(False)
+        self._main_splitter.addWidget(self._sidebar)
+        self._main_splitter.addWidget(self.reading_area)
+        self._main_splitter.addWidget(self._settings_panel)
+        self._main_splitter.setStretchFactor(0, 0)
+        self._main_splitter.setStretchFactor(1, 1)
+        self._main_splitter.setStretchFactor(2, 0)
+        self._main_splitter.setSizes([260, 1200, 0])
+        self.main_layout.addWidget(self._main_splitter)
 
         self._apply_visual_settings(self._visual_settings)
         if self._media_debug_enabled:
@@ -1911,23 +1961,35 @@ class ReaderView(QWidget):
         scan_pos = 0
 
         if mode == "full_scroll":
+            chapter_base = 0
             for ch in self._chapters:
                 for m in ch.media:
                     token = str(m.get("token", ""))
                     alt = str(m.get("alt", ""))
                     data_url = str(m.get("data_url", ""))
+                    inline = bool(m.get("inline", False))
                     if not token or not data_url:
                         self._media_debug_log(f"collect_skip: token_or_data_missing token={token!r} has_data={bool(data_url)}")
                         continue
-                    pos = doc_text.find(token, scan_pos)
+                    pos = -1
+                    text_pos = m.get("text_pos")
+                    if isinstance(text_pos, int):
+                        candidate = chapter_base + text_pos
+                        if 0 <= candidate <= max(0, len(doc_text) - len(token)) and doc_text[candidate:candidate + len(token)] == token:
+                            pos = candidate
+                    if pos < 0:
+                        pos = doc_text.find(token, scan_pos)
                     if pos < 0:
                         pos = doc_text.find(token)
                     if pos < 0:
                         self._media_debug_log(f"collect_skip: token_not_found_in_doc token={token!r}")
                         continue
-                    entries.append({"token": token, "alt": alt, "data_url": data_url, "pos": pos})
+                    entries.append({"token": token, "alt": alt, "data_url": data_url, "pos": pos, "inline": inline})
                     self._media_debug_log(f"collect_ok: token={token!r} pos={pos} alt={alt!r}")
                     scan_pos = pos + len(token)
+                chapter_base += len(ch.text)
+                if ch is not self._chapters[-1]:
+                    chapter_base += 3
             return entries
 
         # chapter_scroll / paginated: only current chapter media are relevant
@@ -1940,6 +2002,7 @@ class ReaderView(QWidget):
             token = str(m.get("token", ""))
             alt = str(m.get("alt", ""))
             data_url = str(m.get("data_url", ""))
+            inline = bool(m.get("inline", False))
             if not token or not data_url:
                 self._media_debug_log(f"collect_skip: token_or_data_missing token={token!r} has_data={bool(data_url)}")
                 continue
@@ -1956,7 +2019,7 @@ class ReaderView(QWidget):
             if pos < 0:
                 self._media_debug_log(f"collect_skip: token_not_found_in_doc token={token!r}")
                 continue
-            entries.append({"token": token, "alt": alt, "data_url": data_url, "pos": pos})
+            entries.append({"token": token, "alt": alt, "data_url": data_url, "pos": pos, "inline": inline})
             self._media_debug_log(f"collect_ok: token={token!r} pos={pos} alt={alt!r}")
             scan_pos = pos + len(token)
         return entries
