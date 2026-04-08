@@ -16,6 +16,9 @@ from .text_chapters import ChapterItem
 
 _BLOCK_TAGS = {
     "p",
+    "div",
+    "section",
+    "figure",
     "h1",
     "h2",
     "h3",
@@ -280,6 +283,16 @@ def _resolve_relative_zip_path(chapter_path: str, rel_path: str) -> str:
 
 
 def _collect_epub_media_markers(soup: BeautifulSoup, archive: zipfile.ZipFile, chapter_path: str) -> list[dict]:
+    def _is_inline_image(img_node) -> bool:
+        parent = getattr(img_node, "parent", None)
+        pname = str(getattr(parent, "name", "") or "").lower()
+        if pname not in {"p", "span", "a", "em", "strong", "b", "i", "u", "sup", "sub", "li"}:
+            return False
+        if parent is None:
+            return False
+        sibling_text = " ".join(s for s in parent.stripped_strings)
+        return bool(_normalize_whitespace(sibling_text))
+
     media: list[dict] = []
     for img in soup.find_all("img"):
         src = str(img.get("src", "")).strip()
@@ -288,7 +301,7 @@ def _collect_epub_media_markers(soup: BeautifulSoup, archive: zipfile.ZipFile, c
             continue
 
         token = f"[图{len(media) + 1}]"
-        entry = {"type": "image", "token": token, "src": src, "alt": alt}
+        entry = {"type": "image", "token": token, "src": src, "alt": alt, "inline": _is_inline_image(img)}
 
         try:
             rel = urllib.parse.unquote(src).split("#")[0]
@@ -456,6 +469,18 @@ def parse_epub(file_path: str, progress: Callable[[int, str], None] | None = Non
                     continue
 
                 chapter_text = re.sub(r"\n{3,}", "\n\n", "\n\n".join(paragraphs)).strip()
+                if chapter_text and media:
+                    cursor = 0
+                    for m in media:
+                        tk = str(m.get("token", "")).strip()
+                        if not tk:
+                            continue
+                        pos = chapter_text.find(tk, cursor)
+                        if pos < 0:
+                            pos = chapter_text.find(tk)
+                        if pos >= 0:
+                            m["text_pos"] = pos
+                            cursor = pos + len(tk)
                 chapters.append(
                     ChapterItem(
                         title,
